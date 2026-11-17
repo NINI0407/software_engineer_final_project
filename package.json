@@ -1,0 +1,38 @@
+{
+  "name": "quiz-buzzer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n mock,web -c yellow,cyan \"npm:dev:mock\" \"npm:dev:web\"",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev:mock": "node mock/index.js",
+    "build": "vite build --config web/vite.config.ts",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "multer": "^2.5.0",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
+    "vue": "^3.5.45",
+    "vue-router": "^4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "concurrently": "^9.2.5",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.6",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.2.12"
+  }
+}

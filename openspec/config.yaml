@@ -4,6 +4,8 @@ context: |
   Language: zh-TW
   All artifacts must be written in zh-TW.
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Guided Notes 匯入/匯出一律動態解析，禁止寫死儲存格位置。
+  機敏資訊只放 .env，不得進 repo。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
