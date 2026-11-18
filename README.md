@@ -1,6 +1,6 @@
 # 課堂搶答系統（前端 + 開發用 mock 後端）
 
-用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 是**前端**與**開發用 mock 後端**；正式後端由其他組員負責，雙方依「前端介面約定」溝通：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/archive/2026-11-18-switch-to-online-google-sheets/design.md` 的 v1（G2），組長遞補的規則與介面差異見 `openspec/changes/auto-promote-leader-on-offline/design.md` 的 L4。
+用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 是**前端**與**開發用 mock 後端**；正式後端由其他組員負責，雙方依「前端介面約定」溝通：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/archive/2026-11-18-switch-to-online-google-sheets/design.md` 的 v1（G2），組長遞補的規則與介面差異見 `openspec/changes/archive/2026-11-18-auto-promote-leader-on-offline/design.md` 的 L4。
 
 - 前端：Vite + Vue 3（`web/`）
 - mock 後端：Express + Socket.IO，只存在記憶體（`mock/`）

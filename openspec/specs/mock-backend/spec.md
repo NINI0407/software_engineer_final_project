@@ -8,12 +8,13 @@
 
 ### Requirement: 模擬基本規則
 mock 後端 SHALL 以記憶體保存狀態，並模擬下列規則，讓前端的錯誤處理與畫面可以被驗證：
-- 同時只能有一題進行中，重開時 `round` 加 1
-- 組長為最早加入的成員
+- 同時只能有一題進行中，重開時 `round` 加 1，並清除該題的草稿與提交
+- 組長依「依在線狀態遞補組長」決定，不能由老師指定
 - 第一題開始後鎖定組別
 - 每組每題每輪只能有效送出一次
 - 依接收順序給順位
 - 空白檢查與 500 字上限
+- 同組草稿以最後收到的內容為準
 - 題目結束前不把他組資料送給學生
 
 mock 的行為只用於開發與測試，不代表正式後端的實作。
@@ -68,7 +69,7 @@ mock 後端 SHALL 實作 design.md 中介面約定 v1 的所有 REST 路徑、�
 - **THEN** 學生快照中沒有試算表的網址、標題或任何儲存格位置
 
 #### Scenario: 舊路徑已移除
-- **WHEN** 請求 `POST /api/uploads` 或 `GET /api/activities/ABC234/export.xlsx`
+- **WHEN** 請求 `POST /api/uploads`、`GET /api/activities/ABC234/export.xlsx` 或 `PUT /api/activities/ABC234/groups/g1/leader`
 - **THEN** mock 回應 404
 
 ### Requirement: 模擬試算表寫回
@@ -146,3 +147,42 @@ mock 後端 SHALL 在 `GET /api/activities/:code/export.csv` 回傳各題結果�
 #### Scenario: 匯出 CSV
 - **WHEN** 請求 `GET /api/activities/ABC234/export.csv`
 - **THEN** mock 回應的 `Content-Disposition` 檔名為 `ABC234_results.csv`
+
+### Requirement: 依在線狀態遞補組長
+mock 後端 SHALL 為每一組保存一位現任組長，並依成員的在線狀態更換。成員至少有一條 Socket.IO 連線，或被測試鉤子設為在線，才算在線。現任組長離線或離開本組時，SHALL 立即改由同組在線且加入本組順序最早的成員接任，不設等待時間；沒有在線成員時組長 SHALL 清空。組長清空時，第一位在線的成員 SHALL 成為組長。現任組長在線期間，組長 MUST NOT 因其他成員上線而改變。每次組長改變都 SHALL 推送新快照。
+
+#### Scenario: 組長離線後立即遞補
+- **WHEN** 第 1 組依加入順序有小明（組長）、小華、小美三人，小華離線、小美在線，接著小明的所有連線都中斷
+- **THEN** mock 立即推送新快照，第 1 組的組長為小美，小明與小華的 `isLeader` 都是 false
+
+#### Scenario: 原組長回來不會拿回組長
+- **WHEN** 小明離線後由小華接任，之後小明重新連線
+- **THEN** 組長仍是小華，小明的 `me.isLeader` 為 false
+
+#### Scenario: 全組離線
+- **WHEN** 第 1 組只有小明一人在線且是組長，小明的連線中斷
+- **THEN** 第 1 組沒有任何成員的 `isLeader` 為 true
+
+#### Scenario: 全組離線後第一位上線者接任
+- **WHEN** 第 1 組全組離線、沒有組長，小華先重新連線，小明之後才連線
+- **THEN** 小華成為組長；小明連線後，組長仍是小華
+
+#### Scenario: 同一人開多個分頁
+- **WHEN** 組長小明開著兩個分頁，關掉其中一個
+- **THEN** 小明仍在線，組長不變
+
+#### Scenario: 用測試鉤子讓組長離線
+- **WHEN** 以 `/__mock/presence` 把第 1 組組長小明設為離線，小華在線
+- **THEN** 第 1 組的組長立即改為小華，與真的斷線時的行為相同
+
+#### Scenario: 組長在開始前換組
+- **WHEN** 第一題開始前，第 1 組組長小明換到第 2 組，第 1 組的小華在線，第 2 組目前沒有組長
+- **THEN** 第 1 組的組長改為小華；小明在線，所以成為第 2 組的組長
+
+#### Scenario: 離線成員選組
+- **WHEN** 一位只透過 REST 加入、還沒有任何連線的學生選了一個沒有組長的組
+- **THEN** 該組仍沒有組長，直到有成員上線
+
+#### Scenario: 遞補後由新組長送出
+- **WHEN** 題目進行中，組長小明離線、小華接任，小華送出答案
+- **THEN** mock 回應 201；小明重新連線後送出時，mock 回應 403 `NOT_LEADER`
