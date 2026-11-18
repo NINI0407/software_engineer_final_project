@@ -7,6 +7,50 @@ context: |
   Guided Notes 匯入/匯出一律動態解析，禁止寫死儲存格位置。
   機敏資訊只放 .env，不得進 repo。
 
+  ## 專案
+  - 課堂搶答系統（軟體工程期末專題）：取代「學生上台把 Guided Notes 答案寫在黑板上」。
+    老師從線上 Google 試算表匯入題目、開始/結束/重開題目；學生以組為單位搶答，組長送出，
+    結束後由後端把順位 1 的答案寫回原試算表的對應填空格。
+  - 此分支(feature/quiz-buzzer-frontend)目前只負責「前端」與「開發用 mock 後端」，之後會與後端合併。
+    雙方依「前端介面約定」溝通：v0 在 archive/2026-11-17-build-quiz-buzzer-frontend 的 design.md（D8），
+    v1 在 archive/2026-11-18-switch-to-online-google-sheets 的 design.md（G2），之後的差異寫在各 change 的 design.md。
+  - 改到介面約定（REST 路徑、錯誤碼、快照欄位、Socket.IO 事件）時，design.md 必須附「相對前一版的差異表」，
+    交給後端組確認；mock 與前端照同一份約定實作。
+
+  ## 技術堆疊
+  - Node.js 20 以上（開發用 Node 24），npm，ES modules（package.json `type: module`）。
+  - 前端 `web/`：Vue 3（Composition API、`<script setup lang="ts">`）、Vue Router 4、Vite 6、TypeScript 5（vue-tsc 型別檢查）。
+    沒有使用 Pinia 等狀態管理套件，用 `reactive` 自製 store。
+  - mock 後端 `mock/`：Express 4 + Socket.IO 4，純 JavaScript，狀態只存在記憶體；不呼叫任何 Google API、不讀任何 Google 憑證。
+  - 測試：Vitest 3（單元，jsdom；含 mock 後端的整合測試）、Playwright（e2e，只跑 chromium，workers 1）。
+  - 執行環境：Windows + OneDrive 同步資料夾；路徑含中文，指令以 Git Bash / PowerShell 執行。
+
+  ## 架構慣例
+  - 後端是唯一的事實來源：前端收到 `snapshot` 就整份替換狀態，畫面只依快照推導，
+    MUST NOT 自行推算題目狀態、組長、順位或能否作答；REST 成功只解除「處理中」，畫面切換等快照。
+  - 快照帶遞增的 `version`；版本跳號或事件對不上時送 `snapshot:request` 重新同步。
+  - 學生快照不得含他組資料（題目結束前）或任何試算表資訊；老師快照才有 `sheet`。
+  - 錯誤回應格式 `{ error: { code, message, details?, shareWith? } }`；前端用 `web/src/lib/errors.ts` 的對照表把 code 轉成提示文字與後續動作。
+  - 介面型別集中在 `web/src/api/types.ts`，REST 在 `rest.ts`，Socket.IO 在 `socket.ts`；畫面狀態推導寫成 `web/src/store/view.ts` 的純函式並有單元測試。
+  - mock 的每次狀態改變都經過 `bump()`（version 遞增並推送快照）。測試專用行為只放在 `/__mock/*` 鉤子，且只在 `MOCK_TEST_HOOKS=1` 時啟用。
+
+  ## 程式風格
+  - 2 空白縮排、單引號、不加分號；沒有 ESLint/Prettier，照既有檔案的風格。
+  - 註解、UI 文字、測試名稱都用繁體中文；註解可以引用 design 的決策編號（例如 design L1、G5）。
+  - e2e 用 `data-testid` 選取元素；新增可互動元素時一併加上 `data-testid`。
+  - 測試名稱描述行為與預期結果，盡量對應 spec 的 Scenario 名稱。
+
+  ## 測試與驗收
+  - 每個 spec Scenario 都要有對應的測試（mock 單元測試或 e2e）。
+  - 完成前要通過：`npm run typecheck`、`npm test`、`npm run test:e2e`、`npm run build`、`npm run check:secrets`。
+  - e2e 自動啟動獨立的 mock（:3100）與前端（:5174），教師密碼在執行時隨機產生；每個測試前呼叫 `/__mock/reset`。
+  - 「約一秒內同步」的斷言逾時設 2 秒。
+
+  ## 安全
+  - 前端與 mock 都不得接觸 Google 憑證；不得新增 `VITE_GOOGLE_*` 環境變數（Vite 會打包進瀏覽器）。
+  - 教師密碼只從環境變數 `TEACHER_PASSWORD` 讀取；前端不得保存或比對密碼。
+
+
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
 # Example:
