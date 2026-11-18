@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, RestError } from '../api/rest'
 import type { TeacherQuestion, TeacherSnapshot } from '../api/types'
@@ -8,7 +8,7 @@ import { describeError } from '../lib/errors'
 import { formatAnswers, groupName, GROUP_STATUS_TEXT, STATUS_TEXT } from '../lib/format'
 import { onSnapshot, requestResync, store } from '../store'
 import { startLive, stopLive } from '../store/live'
-import { teacherButtons as tb } from '../store/view'
+import { groupHasNoLeader, teacherButtons as tb } from '../store/view'
 
 const route = useRoute()
 const code = String(route.params.code).toUpperCase()
@@ -58,12 +58,6 @@ const start = (q: TeacherQuestion) => run(`open-${q.id}`, () => api.openQuestion
 const close = (q: TeacherQuestion) => run(`close-${q.id}`, () => api.closeQuestion(code, q.id))
 const reopen = (q: TeacherQuestion) => run(`reopen-${q.id}`, () => api.reopenQuestion(code, q.id))
 const startNext = () => next.value && run('next', () => api.openQuestion(code, next.value!.id))
-
-const leaderPick = reactive<Record<string, string>>({})
-const setLeader = (gid: string) => {
-  const cid = leaderPick[gid]
-  if (cid) run(`leader-${gid}`, () => api.setLeader(code, gid, cid))
-}
 
 const closedResults = computed(() => {
   const s = snap.value
@@ -166,13 +160,7 @@ onUnmounted(() => {
             </li>
             <li v-if="!g.members.length" class="muted">尚無成員</li>
           </ul>
-          <div v-if="g.members.length > 1" class="row">
-            <select v-model="leaderPick[g.group.id]" style="flex: 1" data-testid="leader-select">
-              <option value="">轉移組長給…</option>
-              <option v-for="m in g.members.filter(tb.canSetLeader)" :key="m.clientId" :value="m.clientId">{{ m.nickname }}</option>
-            </select>
-            <button :disabled="busy || !leaderPick[g.group.id]" data-testid="leader-btn" @click="setLeader(g.group.id)">設為組長</button>
-          </div>
+          <p v-if="groupHasNoLeader(g.members)" class="muted" style="margin: 0" data-testid="no-leader">目前無組長</p>
         </div>
       </div>
     </section>

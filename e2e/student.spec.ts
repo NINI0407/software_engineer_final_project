@@ -160,16 +160,33 @@ test.describe('6.3 等待與作答畫面', () => {
     const t = await teacherContext(browser)
     const code = await createActivity(t)
     const leader = await joinStudent(browser, code, '原組長', 'g1')
-    const other = await joinStudent(browser, code, '新組長', 'g1', { open: false })
+    await joinStudent(browser, code, '新組長', 'g1', { open: false })
     await questionApi(t, code).open('q1')
     await leader.page.getByTestId('answer-0').fill('CPU')
-    // 組長剛被轉移，但新快照還沒送到這個畫面
+    // 組長剛因離線被遞補給其他組員，但新快照還沒送到這個畫面
     await hook('delaySnapshots', { ms: 3000 })
-    await t.request.put(`/api/activities/${code}/groups/g1/leader`, { data: { clientId: other.clientId } })
+    await hook('presence', { code, clientId: leader.clientId, online: false })
     await leader.page.getByTestId('submit-btn').click()
     await expect(leader.page.getByTestId('play-message')).toHaveText('只有組長能送出')
     await expect(leader.page.getByTestId('leader-only')).toBeVisible()
     await hook('delaySnapshots', { ms: 0 })
+  })
+
+  test('遞補成為組長：組長離線後，組員約一秒內出現可用的送出鈕，草稿不變', async ({ browser }) => {
+    const t = await teacherContext(browser)
+    const code = await createActivity(t)
+    const leader = await joinStudent(browser, code, '組長', 'g1', { open: false })
+    const member = await joinStudent(browser, code, '組員', 'g1')
+    await questionApi(t, code).open('q1')
+    await member.page.getByTestId('answer-0').fill('CPU')
+    await expect(member.page.getByTestId('leader-only')).toBeVisible()
+    await expect(member.page.getByTestId('me-leader')).toHaveCount(0)
+
+    await hook('presence', { code, clientId: leader.clientId, online: false })
+    await expect(member.page.getByTestId('me-leader')).toBeVisible()
+    await expect(member.page.getByTestId('submit-btn')).toBeEnabled()
+    await expect(member.page.getByTestId('leader-only')).toHaveCount(0)
+    await expect(member.page.getByTestId('answer-0')).toHaveValue('CPU')
   })
 })
 

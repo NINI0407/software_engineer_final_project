@@ -92,13 +92,17 @@ export interface Student {
   clientId: string
 }
 
-/** 以 API 加入（並選組），再開啟學生頁面 */
+/**
+ * 以 API 加入（並選組），再開啟學生頁面。
+ * 組長只會由在線成員擔任（change auto-promote-leader-on-offline），所以 `open: false` 時
+ * 預設用 presence 鉤子把學生設為在線；需要離線成員時傳 `online: false`。
+ */
 export async function joinStudent(
   browser: Browser,
   code: string,
   nickname: string,
   groupId?: string,
-  { open = true } = {},
+  { open = true, online = true } = {},
 ): Promise<Student> {
   const ctx = await newContext(browser)
   const j = await ctx.request.post(`/api/activities/${code}/join`, { data: { nickname } })
@@ -108,6 +112,7 @@ export async function joinStudent(
     const g = await ctx.request.put(`/api/activities/${code}/me/group`, { data: { groupId } })
     expect(g.ok()).toBeTruthy()
   }
+  if (!open && online) await hook('presence', { code, clientId, online: true })
   const page = await ctx.newPage()
   if (open) {
     await page.goto(`/play/${code}`)

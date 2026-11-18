@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Result } from '../api/types'
 import { q, studentSnap, teacherSnap } from '../test/fixtures'
-import { canChangeGroup, hasSheetWrites, sheetWritePlan, studentView, teacherButtons } from './view'
+import { canChangeGroup, groupHasNoLeader, hasSheetWrites, sheetWritePlan, studentView, teacherButtons } from './view'
 
 const result = (qid: string): Result => ({ questionId: qid, round: 1, submissions: [], winnerGroupId: null })
 
@@ -88,9 +88,18 @@ describe('teacherButtons（design D11）', () => {
     expect(teacherButtons.nextQuestion(done)).toBeNull()
   })
 
-  it('設為組長：只有不是組長的成員可以', () => {
-    expect(teacherButtons.canSetLeader({ clientId: 'a', nickname: 'a', online: true, isLeader: true })).toBe(false)
-    expect(teacherButtons.canSetLeader({ clientId: 'b', nickname: 'b', online: true, isLeader: false })).toBe(true)
+})
+
+describe('groupHasNoLeader（看板的「目前無組長」）', () => {
+  const m = (clientId: string, online: boolean, isLeader: boolean) => ({ clientId, nickname: clientId, online, isLeader })
+  it('有組長時為 false', () => {
+    expect(groupHasNoLeader([m('a', false, false), m('b', true, true)])).toBe(false)
+  })
+  it('有成員但全組離線、沒有組長時為 true', () => {
+    expect(groupHasNoLeader([m('a', false, false), m('b', false, false)])).toBe(true)
+  })
+  it('沒有成員時為 false（顯示「尚無成員」）', () => {
+    expect(groupHasNoLeader([])).toBe(false)
   })
 })
 

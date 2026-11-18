@@ -29,6 +29,10 @@ export interface Member {
   clientId: string
   nickname: string
   online: boolean
+  /**
+   * 是否為現任組長。組長由後端依在線狀態決定：組長離線時立即遞補給在線且加入順序最早的組員，
+   * 不會自動還回；每組最多一位，全組離線時可以沒有（change auto-promote-leader-on-offline）。
+   */
   isLeader: boolean
 }
 
@@ -71,6 +75,7 @@ export interface StudentSnapshot {
   questions: Question[]
   currentQuestionId: string | null
   groupLocked: boolean
+  /** `isLeader` 以這份快照為準；斷線或重新整理後可能已遞補給其他組員 */
   me: { clientId: string; nickname: string; groupId: string | null; isLeader: boolean }
   myGroup: null | {
     members: Member[]

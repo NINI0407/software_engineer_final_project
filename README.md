@@ -1,6 +1,6 @@
 # 課堂搶答系統（前端 + 開發用 mock 後端）
 
-用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 是**前端**與**開發用 mock 後端**；正式後端由其他組員負責，雙方依「前端介面約定」溝通：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/switch-to-online-google-sheets/design.md` 的 v1（G2）。
+用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 是**前端**與**開發用 mock 後端**；正式後端由其他組員負責，雙方依「前端介面約定」溝通：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/archive/2026-11-18-switch-to-online-google-sheets/design.md` 的 v1（G2），組長遞補的規則與介面差異見 `openspec/changes/auto-promote-leader-on-offline/design.md` 的 L4。
 
 - 前端：Vite + Vue 3（`web/`）
 - mock 後端：Express + Socket.IO，只存在記憶體（`mock/`）
@@ -50,6 +50,18 @@ Guided Notes 直接使用**線上 Google 試算表**：老師貼上試算表網�
 
 把 `.env` 的 `BACKEND_URL` 改成後端位址（例如 `http://localhost:4000`），只執行 `npm run dev:web`。Vite 會把 `/api` 與 `/socket.io` 代理到該位址，前端程式不需要修改。
 
+## 組長規則
+
+每組同時最多一位組長，只有組長能送出答案。組長完全由後端依成員的在線狀態決定，老師**不能**手動指定或轉移組長；前端只照快照的 `isLeader` 顯示。
+
+- **在線**：至少有一個分頁連著 Socket.IO。同一個瀏覽器的分頁算同一位學生，要全部關掉才算離線。
+- **離線立即遞補**：組長離線時，立刻由同組「在線且加入順序最早」的組員接任，不設等待秒數。
+- **不會自動還回**：原組長或加入順序更早的人重新上線，仍維持現任組長。組長只在現任組長離線或換組時更換。
+- **全組離線時沒有組長**：看板在該組顯示「目前無組長」；之後第一位上線的成員成為組長。
+- **換組**：第一題開始前可以換組；組長換組時，原組依上面的規則遞補，他在新組沒有組長時成為新組的組長。
+- **重新整理不保證恢復組長**：學生重新整理後會以同一個 `client_id` 恢復暱稱、組別與作答狀態，但重新整理期間連線會中斷；同組有其他在線組員時，組長會遞補給對方。
+- **異常斷線的偵測時間**：關閉分頁或重新整理會立即被偵測；網路中斷、手機休眠這類異常斷線，要等 Socket.IO 心跳逾時（預設約 20 到 45 秒）才會被視為離線並遞補。這是傳輸層的偵測延遲，不是規則上的等待；正式後端可以自行調整心跳設定。
+
 ## mock 後端設定
 
 | 環境變數 | 說明 | 預設 |
@@ -84,7 +96,7 @@ Guided Notes 直接使用**線上 Google 試算表**：老師貼上試算表網�
 | 端點（POST，JSON） | 用途 |
 |---|---|
 | `/__mock/reset` | 清空所有活動、匯入結果、寫入紀錄、登入與連線 |
-| `/__mock/presence` `{ code, clientId, online }` | 強制成員顯示為在線/離線（`online: null` 取消） |
+| `/__mock/presence` `{ code, clientId, online }` | 強制成員為在線/離線（`online: null` 取消，改回依實際連線判斷）；和真的上下線一樣會觸發組長遞補 |
 | `/__mock/forceError` `{ method, path, status, code, details?, shareWith?, times }` | 讓接下來符合的請求回傳指定錯誤（也可用在匯入與寫回，例如 502 `SHEET_WRITE_FAILED`） |
 | `/__mock/skipVersions` `{ count }` | 下一次推送前跳過若干個版本號 |
 | `/__mock/delaySnapshots` `{ ms }` | 延遲推送快照（`0` 取消） |

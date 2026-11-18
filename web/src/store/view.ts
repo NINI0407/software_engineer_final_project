@@ -62,8 +62,10 @@ export const teacherButtons = {
     const idle = s.questions.filter((q) => q.status === 'idle')
     return idle.length ? idle.reduce((a, b) => (b.number < a.number ? b : a)) : null
   },
-  canSetLeader: (m: Member) => !m.isLeader,
 }
+
+/** 看板顯示「目前無組長」：該組有成員，但沒有任何人是組長（全組離線） */
+export const groupHasNoLeader = (members: Member[]) => members.length > 0 && !members.some((m) => m.isLeader)
 
 /** 寫回試算表前，確認視窗中每一題的預覽（design G5） */
 export type SheetWriteItem =

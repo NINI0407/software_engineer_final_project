@@ -117,7 +117,7 @@ test.describe('8.2 斷線、重連與版本跳號', () => {
     await expect(s.page.getByTestId('conn-status')).toHaveText('已連線')
   })
 
-  test('已送出的組長重新整理：恢復為已送出畫面，組長身分不變', async ({ browser }) => {
+  test('只有自己在線的組長重新整理：以同一身分恢復為已送出畫面，依快照仍是組長', async ({ browser }) => {
     const t = await teacherContext(browser)
     const code = await createActivity(t)
     const s = await joinStudent(browser, code, '組長', 'g1')
@@ -127,8 +127,31 @@ test.describe('8.2 斷線、重連與版本跳號', () => {
     await expect(s.page.getByTestId('submitted-msg')).toBeVisible()
     await s.page.reload()
     await expect(s.page.getByTestId('submitted-msg')).toBeVisible()
+    await expect(s.page.getByTestId('me')).toHaveText('組長')
+    await expect(s.page.getByTestId('group-select')).toHaveValue('g1')
     await expect(s.page.getByTestId('me-leader')).toBeVisible()
     await expect(s.page.getByTestId('answer-0')).toHaveValue('CPU')
+  })
+
+  test('重新整理時組長被遞補：恢復原本身分但變成組員，在線的組員成為組長', async ({ browser }) => {
+    const t = await teacherContext(browser)
+    const code = await createActivity(t)
+    const a = await joinStudent(browser, code, '小明', 'g1')
+    const b = await joinStudent(browser, code, '小華', 'g1')
+    await questionApi(t, code).open('q1')
+    await expect(a.page.getByTestId('me-leader')).toBeVisible()
+    // 先關閉再重新開啟，確保舊連線的斷線先於新連線被後端處理（一般的重新整理兩者可能交錯）
+    await a.page.close()
+    await expect(b.page.getByTestId('me-leader')).toBeVisible()
+    const page = await a.ctx.newPage()
+    await page.goto(`/play/${code}`)
+    await expect(page.getByTestId('conn-status')).toHaveText('已連線')
+    await expect(page.getByTestId('me')).toHaveText('小明')
+    await expect(page.getByTestId('group-select')).toHaveValue('g1')
+    await expect(page.getByTestId('me-leader')).toHaveCount(0)
+    await expect(page.getByTestId('submit-btn')).toBeDisabled()
+    await expect(page.getByTestId('leader-only')).toHaveText('只有組長能送出')
+    await expect(b.page.getByTestId('me-leader')).toBeVisible()
   })
 
   test('版本跳號：套用快照並送出 snapshot:request 重新同步', async ({ browser }) => {

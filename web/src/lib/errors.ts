@@ -30,7 +30,6 @@ export const ERROR_TABLE: Record<string, ErrorInfo> = {
   EXPORT_IN_PROGRESS: { message: '正在寫回中，請稍候', action: 'none' },
   ANOTHER_QUESTION_OPEN: { message: '已有題目進行中', action: 'resync' },
   INVALID_STATE: { message: '題目狀態已變更', action: 'resync' },
-  NOT_A_MEMBER: { message: '此成員不屬於該組', action: 'resync' },
   ACTIVITY_NOT_FOUND: { message: '找不到此活動代號', action: 'none' },
   INVALID_NICKNAME: { message: '請輸入 1 到 20 字的暱稱', action: 'none' },
   NOT_JOINED: { message: '請先加入活動', action: 'none' },

@@ -34,13 +34,37 @@ async function teacher() {
 const activity = (t, id = 'mock-single', groupCount = 3) => createActivity(t, id, groupCount)
 const importSheet = (t, id) => t.post('/api/sheets/import', { sheetUrl: sheetUrl(id) })
 
-async function student(code, nickname, groupId) {
+/**
+ * 以 REST 加入（並選組）的學生。預設再建立一條 Socket.IO 連線讓他「在線」（design L6），
+ * 連線放在 `s.conn`，測試結束時關閉；`online: false` 時只用 REST，算離線成員。
+ */
+async function student(code, nickname, groupId, { online = true } = {}) {
   const s = agent(base)
   const j = await s.post(`/api/activities/${code}/join`, { nickname })
   expect(j.status).toBe(200)
+  s.clientId = j.body.me.clientId
   if (groupId) expect((await s.put(`/api/activities/${code}/me/group`, { groupId })).status).toBe(200)
+  if (online) s.conn = await goOnline(s, code)
   return s
 }
+
+/** 為學生多開一條連線（例如另一個分頁），回傳 testkit 的連線物件 */
+async function goOnline(s, code) {
+  const c = connect(base, s, code, 'student')
+  sockets.push(c)
+  await c.ready()
+  return c
+}
+
+/** 關閉連線並等到後端處理完斷線 */
+async function goOffline(c) {
+  const closed = new Promise((r) => c.socket.once('disconnect', r))
+  c.close()
+  await closed
+  await wait(50)
+}
+
+const meOf = async (s, code) => (await s.get(`/api/activities/${code}/student`)).body.me
 
 const hook = (path, body) =>
   fetch(`${base}/__mock/${path}`, {
@@ -196,17 +220,15 @@ describe('3.2 老師 REST', () => {
     expect((await q('q2', 'reopen')).body.error.code).toBe('INVALID_STATE')
   })
 
-  it('轉移組長與匯出 CSV', async () => {
+  it('轉移組長的路徑已移除（404），組長不變；匯出 CSV', async () => {
     const t = await teacher()
     const { activity: a } = await activity(t)
     const s1 = await student(a.code, '小明', 'g1')
     const s2 = await student(a.code, '小華', 'g1')
-    const s2id = (await s2.get(`/api/activities/${a.code}/student`)).body.me.clientId
-    const bad = await t.put(`/api/activities/${a.code}/groups/g2/leader`, { clientId: s2id })
-    expect(bad.body.error.code).toBe('NOT_A_MEMBER')
-    expect((await t.put(`/api/activities/${a.code}/groups/g1/leader`, { clientId: s2id })).status).toBe(204)
-    expect((await s2.get(`/api/activities/${a.code}/student`)).body.me.isLeader).toBe(true)
-    expect((await s1.get(`/api/activities/${a.code}/student`)).body.me.isLeader).toBe(false)
+    const moved = await t.put(`/api/activities/${a.code}/groups/g1/leader`, { clientId: s2.clientId })
+    expect(moved.status).toBe(404)
+    expect((await meOf(s1, a.code)).isLeader).toBe(true)
+    expect((await meOf(s2, a.code)).isLeader).toBe(false)
 
     const c = await t.get(`/api/activities/${a.code}/export.csv`)
     expect(c.headers.get('content-disposition')).toContain(`${a.code}_results.csv`)
@@ -244,7 +266,7 @@ describe('3.3 學生 REST', () => {
     expect((await s.get(`/api/activities/${code}/student`)).body.me.clientId).toBe(j.body.me.clientId)
   })
 
-  it('組長為最早加入該組的人；換組；開始後鎖定，但還沒選組的人可以選一次', async () => {
+  it('組長為最早加入該組的在線成員；換組時交接；開始後鎖定，但還沒選組的人可以選一次', async () => {
     const a = await student(code, 'A', 'g1')
     const b = await student(code, 'B', 'g1')
     expect((await b.get(`/api/activities/${code}/student`)).body.me.isLeader).toBe(false)
@@ -339,9 +361,10 @@ describe('3.4 Socket.IO', () => {
   it('版本連續遞增；進行中學生快照沒有他組資料；草稿只送到同組', async () => {
     const t = await teacher()
     const code = (await activity(t)).activity.code
-    const a1 = await student(code, 'A1', 'g1')
-    const a2 = await student(code, 'A2', 'g1')
-    const b1 = await student(code, 'B1', 'g2')
+    // 本測試自己建立並追蹤每條連線
+    const a1 = await student(code, 'A1', 'g1', { online: false })
+    const a2 = await student(code, 'A2', 'g1', { online: false })
+    const b1 = await student(code, 'B1', 'g2', { online: false })
     const ct = connect(base, t, code, 'teacher')
     const c1 = connect(base, a1, code, 'student')
     const c2 = connect(base, a2, code, 'student')
@@ -410,7 +433,7 @@ describe('3.5 測試鉤子', () => {
   it('forceError、skipVersions、delaySnapshots、presence、disconnect、reset', async () => {
     const t = await teacher()
     const code = (await activity(t)).activity.code
-    const s = await student(code, 'A', 'g1')
+    const s = await student(code, 'A', 'g1', { online: false }) // 本測試自己管理連線數
 
     await hook('forceError', { method: 'PUT', path: '/me/group', status: 409, code: 'GROUP_LOCKED' })
     expect((await s.put(`/api/activities/${code}/me/group`, { groupId: 'g2' })).body.error.code).toBe(
@@ -705,5 +728,105 @@ describe('不連線 Google 服務', () => {
       expect(src).not.toMatch(/process\.env\.[A-Z_]*GOOGLE/i)
       expect(src).not.toMatch(/googleapis/i)
     }
+  })
+})
+
+describe('依在線狀態遞補組長（change auto-promote-leader-on-offline）', () => {
+  let t, code
+  beforeEach(async () => {
+    t = await teacher()
+    code = (await activity(t)).activity.code
+  })
+  const members = async (gid) =>
+    (await t.get(`/api/activities/${code}/teacher`)).body.groups.find((g) => g.group.id === gid).members
+  const leaderOf = async (gid) => (await members(gid)).find((m) => m.isLeader)?.nickname ?? null
+
+  it('組長離線後立即遞補給在線且加入順序最早的組員，並推送快照', async () => {
+    const a = await student(code, '小明', 'g1')
+    await student(code, '小華', 'g1', { online: false })
+    const c = await student(code, '小美', 'g1')
+    const ct = connect(base, t, code, 'teacher')
+    sockets.push(ct)
+    await ct.ready()
+    expect(await leaderOf('g1')).toBe('小明')
+
+    await goOffline(a.conn)
+    await until(() => ct.snapshots.at(-1)?.groups[0].members.find((m) => m.isLeader)?.nickname === '小美')
+    expect((await meOf(c, code)).isLeader).toBe(true)
+    expect((await meOf(a, code)).isLeader).toBe(false)
+    expect((await members('g1')).filter((m) => m.isLeader)).toHaveLength(1)
+  })
+
+  it('原組長重新上線不會拿回組長', async () => {
+    const a = await student(code, '小明', 'g1')
+    const b = await student(code, '小華', 'g1')
+    await goOffline(a.conn)
+    expect(await leaderOf('g1')).toBe('小華')
+    await goOnline(a, code)
+    expect(await leaderOf('g1')).toBe('小華')
+    expect((await meOf(a, code)).isLeader).toBe(false)
+    expect((await meOf(b, code)).isLeader).toBe(true)
+  })
+
+  it('全組離線時沒有組長；之後第一位上線者接任，較早加入的人上線也不搶回', async () => {
+    const a = await student(code, '小明', 'g1')
+    const b = await student(code, '小華', 'g1')
+    await goOffline(a.conn)
+    await goOffline(b.conn)
+    expect(await leaderOf('g1')).toBeNull()
+    expect((await meOf(a, code)).isLeader).toBe(false)
+
+    await goOnline(b, code)
+    expect(await leaderOf('g1')).toBe('小華')
+    await goOnline(a, code)
+    expect(await leaderOf('g1')).toBe('小華')
+  })
+
+  it('同一人開多個分頁，關掉其中一個仍在線，組長不變', async () => {
+    const a = await student(code, '小明', 'g1')
+    await student(code, '小華', 'g1')
+    await goOnline(a, code)
+    await goOffline(a.conn)
+    const m = (await members('g1')).find((x) => x.nickname === '小明')
+    expect(m).toMatchObject({ online: true, isLeader: true })
+  })
+
+  it('用 presence 鉤子讓組長離線，行為與真的斷線相同', async () => {
+    const a = await student(code, '小明', 'g1')
+    await student(code, '小華', 'g1')
+    await hook('presence', { code, clientId: a.clientId, online: false })
+    expect(await leaderOf('g1')).toBe('小華')
+    await hook('presence', { code, clientId: a.clientId, online: null }) // 取消強制：小明實際仍在線
+    expect(await leaderOf('g1')).toBe('小華')
+  })
+
+  it('組長在開始前換組：原組遞補；在線的他成為沒有組長的新組的組長', async () => {
+    const a = await student(code, '小明', 'g1')
+    await student(code, '小華', 'g1')
+    const res = await a.put(`/api/activities/${code}/me/group`, { groupId: 'g2' })
+    expect(res.body.me).toMatchObject({ groupId: 'g2', isLeader: true })
+    expect(await leaderOf('g1')).toBe('小華')
+    expect(await leaderOf('g2')).toBe('小明')
+  })
+
+  it('離線成員選組：該組沒有組長，直到有成員上線', async () => {
+    const c = await student(code, '小美', 'g3', { online: false })
+    expect((await meOf(c, code)).isLeader).toBe(false)
+    expect(await leaderOf('g3')).toBeNull()
+    await goOnline(c, code)
+    expect((await meOf(c, code)).isLeader).toBe(true)
+  })
+
+  it('遞補後由新組長送出 201；原組長重新連線後送出 403 NOT_LEADER', async () => {
+    const a = await student(code, '小明', 'g1')
+    const b = await student(code, '小華', 'g1')
+    await t.post(`/api/activities/${code}/questions/q1/open`)
+    await goOffline(a.conn)
+    const answers = [{ blankId: 'q1b1', text: 'CPU' }]
+    const ok = await b.post(`/api/activities/${code}/questions/q1/submissions`, { round: 1, answers })
+    expect(ok.status).toBe(201)
+    await goOnline(a, code)
+    const nl = await a.post(`/api/activities/${code}/questions/q1/submissions`, { round: 1, answers })
+    expect([nl.status, nl.body.error.code]).toEqual([403, 'NOT_LEADER'])
   })
 })

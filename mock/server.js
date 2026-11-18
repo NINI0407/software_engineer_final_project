@@ -80,14 +80,24 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
       .sort((a, b) => a.groupJoinedSeq - b.groupJoinedSeq)
   }
 
-  function leaderId(act, gid) {
-    const members = groupMembers(act, gid)
-    const override = act.leaderOverride[gid]
-    if (override && members.some((m) => m.clientId === override)) return override
-    return members[0]?.clientId ?? null
-  }
-
   const isOnline = (m) => (m.forcedOnline ?? null) !== null ? m.forcedOnline : m.sockets > 0
+
+  /** 現任組長（保存的狀態，可能為 null）；只由 refreshLeaders() 更新 */
+  const leaderId = (act, gid) => act.leaders[gid] ?? null
+
+  /**
+   * 依在線狀態更新每一組的組長（change auto-promote-leader-on-offline，design L1）：
+   * 現任組長仍在本組且在線就保留；否則由本組在線且加入順序最早的成員接任；沒有人在線就清空。
+   * 組長只會在「上下線、換組、presence 改變」時改變，這些都會呼叫 bump()，
+   * 所以在 bump() 推送快照前執行，組長改變與快照在同一個同步區塊完成。
+   */
+  function refreshLeaders(act) {
+    for (const g of act.groups) {
+      const current = act.members.get(act.leaders[g.id])
+      if (current && current.groupId === g.id && isOnline(current)) continue
+      act.leaders[g.id] = groupMembers(act, g.id).find(isOnline)?.clientId ?? null
+    }
+  }
 
   function memberView(act, gid) {
     const lid = leaderId(act, gid)
@@ -212,6 +222,7 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
 
   /** 每次狀態改變：version 遞增，並推送快照給活動中所有連線（依角色過濾） */
   function bump(act) {
+    refreshLeaders(act)
     act.version += 1 + state.skip
     state.skip = 0
     pushSnapshots(act)
@@ -321,7 +332,7 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
       groupLocked: false,
       version: 1,
       members: new Map(),
-      leaderOverride: {},
+      leaders: {}, // groupId → 現任組長的 clientId（或 null）
       submissions: new Map(),
       drafts: new Map(),
       seq: 0,
@@ -387,17 +398,6 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     res.status(204).end()
   })
 
-  app.put('/api/activities/:code/groups/:gid/leader', requireTeacher, loadActivity, (req, res) => {
-    const { act } = req
-    const gid = req.params.gid
-    const m = act.members.get(req.body?.clientId)
-    if (!groupOf(act, gid) || !m || m.groupId !== gid) {
-      return sendError(res, 400, 'NOT_A_MEMBER', '此成員不屬於該組')
-    }
-    act.leaderOverride[gid] = m.clientId
-    bump(act)
-    res.status(204).end()
-  })
 
   function contentDisposition(name) {
     const ascii = name.replace(/[^\x20-\x7E]/g, '_')
@@ -498,7 +498,6 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     if (!groupOf(act, gid)) return sendError(res, 400, 'INVALID_GROUP', '組別不存在')
     if (m.groupId !== gid) {
       if (act.groupLocked && m.groupId) return sendError(res, 409, 'GROUP_LOCKED', '搶答已開始，無法換組')
-      if (m.groupId && act.leaderOverride[m.groupId] === m.clientId) delete act.leaderOverride[m.groupId]
       m.groupId = gid
       m.groupJoinedSeq = ++act.seq
       bump(act)

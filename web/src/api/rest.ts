@@ -88,8 +88,6 @@ export const api = {
     request<void>('POST', `/api/activities/${enc(code)}/questions/${enc(qid)}/close`),
   reopenQuestion: (code: string, qid: string) =>
     request<void>('POST', `/api/activities/${enc(code)}/questions/${enc(qid)}/reopen`),
-  setLeader: (code: string, groupId: string, clientId: string) =>
-    request<void>('PUT', `/api/activities/${enc(code)}/groups/${enc(groupId)}/leader`, { clientId }),
   exportToSheet: (code: string, basedOnVersion: number) =>
     request<ExportToSheetResult>('POST', `/api/activities/${enc(code)}/export-to-sheet`, {
       basedOnVersion,

@@ -259,22 +259,35 @@ test.describe('5.5 各組狀態、順位與組長', () => {
     await expect(result.locator('tbody tr').nth(0)).toContainText('搶答成功')
   })
 
-  test('組長離線標示與轉移組長', async ({ browser }) => {
+  test('組長離線後看板改標新組長；離線標示；全組離線顯示目前無組長；沒有轉移組長的操作', async ({ browser }) => {
     const ctx = await teacherContext(browser)
     const code = await createActivity(ctx)
     const a = await joinStudent(browser, code, '小明', 'g1', { open: false })
-    await joinStudent(browser, code, '小華', 'g1', { open: false })
+    const b = await joinStudent(browser, code, '小華', 'g1', { open: false })
     const page = await openBoard(ctx, code)
     const g1 = page.getByTestId('group-g1')
     await expect(g1.getByTestId('member-小明')).toContainText('組長')
+    await expect(g1.getByTestId('no-leader')).toHaveCount(0)
+    await expect(page.getByTestId('leader-select')).toHaveCount(0)
+    await expect(page.getByTestId('leader-btn')).toHaveCount(0)
+    await expect(page.getByText('設為組長')).toHaveCount(0)
 
+    // 組長離線 → 立即遞補給在線的小華
     await hook('presence', { code, clientId: a.clientId, online: false })
     await expect(g1.getByTestId('member-小明').getByTestId('offline')).toBeVisible()
-
-    await g1.getByTestId('leader-select').selectOption({ label: '小華' })
-    await g1.getByTestId('leader-btn').click()
     await expect(g1.getByTestId('member-小華')).toContainText('組長')
     await expect(g1.getByTestId('member-小明')).not.toContainText('組長')
+
+    // 全組離線 → 沒有組長
+    await hook('presence', { code, clientId: b.clientId, online: false })
+    await expect(g1.getByTestId('member-小華').getByTestId('offline')).toBeVisible()
+    await expect(g1.getByTestId('no-leader')).toHaveText('目前無組長')
+    await expect(g1.locator('.badge.leader')).toHaveCount(0)
+
+    // 小明先回來 → 由他接任，「目前無組長」消失
+    await hook('presence', { code, clientId: a.clientId, online: true })
+    await expect(g1.getByTestId('member-小明')).toContainText('組長')
+    await expect(g1.getByTestId('no-leader')).toHaveCount(0)
   })
 })
 
