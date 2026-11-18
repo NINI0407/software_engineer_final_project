@@ -1,12 +1,12 @@
-// 開發與測試用 mock 後端：依「前端介面約定 v0」（design.md D8）回應 REST 與 Socket.IO。
-// 只存在記憶體；行為只用來支援前端開發與自動化測試，不代表正式後端的實作。
+// 開發與測試用 mock 後端：依「前端介面約定 v1」（change switch-to-online-google-sheets 的 design.md G2）
+// 回應 REST 與 Socket.IO。只存在記憶體；行為只用來支援前端開發與自動化測試，不代表正式後端的實作。
+// mock 不呼叫任何 Google API，也不讀取任何 Google 憑證：試算表的匯入與寫回都只用固定資料模擬。
 
 import crypto from 'node:crypto'
 import http from 'node:http'
 import express from 'express'
-import multer from 'multer'
 import { Server } from 'socket.io'
-import { pickPreview } from './fixtures.js'
+import { SHARE_WITH, pickSheet } from './fixtures.js'
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 排除 0/O/1/I
 const MAX_ANSWER_LENGTH = 500
@@ -37,9 +37,11 @@ function safeEqual(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y)
 }
 
-function sendError(res, status, code, message, details) {
+/** extra：選填的 `details`（字串）與 `shareWith`（要共用給誰的 email） */
+function sendError(res, status, code, message, extra = {}) {
   const error = { code, message }
-  if (details) error.details = details
+  if (extra.details) error.details = extra.details
+  if (extra.shareWith) error.shareWith = extra.shareWith
   res.status(status).json({ error })
 }
 
@@ -56,7 +58,8 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
   function freshState() {
     return {
       sessions: new Set(),
-      uploads: new Map(),
+      imports: new Map(), // importId → 匯入結果
+      sheetWrites: new Map(), // 活動代號 → 模擬寫回的紀錄
       activities: new Map(),
       forced: [], // 測試鉤子：強制下一次請求回傳錯誤
       skip: 0, // 測試鉤子：下一次推送前跳過的版本數
@@ -184,6 +187,8 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
         return { group: g, members: memberView(act, g.id), current }
       }),
       results: results(act),
+      // 只放在老師快照；學生快照不含任何試算表資訊
+      sheet: { ...act.sheet },
     }
   }
 
@@ -227,7 +232,7 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     const f = state.forced[i]
     f.times -= 1
     if (f.times <= 0) state.forced.splice(i, 1)
-    sendError(res, f.status, f.code, f.message ?? f.code)
+    sendError(res, f.status, f.code, f.message ?? f.code, { details: f.details, shareWith: f.shareWith })
   })
 
   const cookies = (req) => parseCookies(req.headers.cookie)
@@ -274,19 +279,14 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     res.json({ authenticated: isTeacher(req) })
   })
 
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })
-  app.post('/api/uploads', requireTeacher, upload.single('file'), (req, res) => {
-    if (!req.file) return sendError(res, 400, 'NOT_XLSX', '請上傳 .xlsx 檔')
-    // multer 以 latin1 解讀檔名，轉回 UTF-8 以支援中文檔名
-    const fileName = Buffer.from(req.file.originalname, 'latin1').toString('utf8')
-    const picked = pickPreview(fileName)
-    if (picked.kind === 'notXlsx') return sendError(res, 400, 'NOT_XLSX', '請上傳 .xlsx 檔')
-    if (picked.kind === 'parseFailed') {
-      return sendError(res, 422, 'PARSE_FAILED', '解析失敗', picked.details)
+  app.post('/api/sheets/import', requireTeacher, (req, res) => {
+    const picked = pickSheet(req.body?.sheetUrl)
+    if (picked.kind === 'error') {
+      return sendError(res, picked.status, picked.code, picked.message, picked)
     }
-    const uploadId = randomId(8)
-    const preview = { uploadId, fileName, ...structuredClone(picked.preview) }
-    state.uploads.set(uploadId, preview)
+    const importId = randomId(8)
+    const preview = { importId, sheetUrl: picked.sheetUrl, ...picked.preview }
+    state.imports.set(importId, { preview, writeMode: picked.writeMode })
     res.json(preview)
   })
 
@@ -299,12 +299,13 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
   }
 
   app.post('/api/activities', requireTeacher, (req, res) => {
-    const { uploadId, groupCount } = req.body ?? {}
+    const { importId, groupCount } = req.body ?? {}
     if (!Number.isInteger(groupCount) || groupCount < 2 || groupCount > 20) {
       return sendError(res, 400, 'INVALID_GROUP_COUNT', '組數須為 2 到 20 的整數')
     }
-    const up = state.uploads.get(uploadId)
-    if (!up) return sendError(res, 404, 'UPLOAD_NOT_FOUND', '找不到上傳的檔案')
+    const imported = state.imports.get(importId)
+    if (!imported) return sendError(res, 404, 'IMPORT_NOT_FOUND', '找不到匯入結果')
+    const up = imported.preview
     const code = newCode()
     const act = {
       code,
@@ -324,6 +325,14 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
       submissions: new Map(),
       drafts: new Map(),
       seq: 0,
+      sheet: {
+        spreadsheetTitle: up.spreadsheetTitle,
+        worksheetTitle: up.worksheetTitle,
+        url: up.sheetUrl,
+        lastExportedAt: null,
+      },
+      writeMode: imported.writeMode,
+      resultsVersion: 0, // 最後一次有題目結束或重開時的 version
     }
     state.activities.set(code, act)
     res.status(201).json(teacherSnapshot(act))
@@ -360,6 +369,7 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     q.status = 'closed'
     act.currentQuestionId = null
     bump(act)
+    act.resultsVersion = act.version
     res.status(204).end()
   })
 
@@ -373,6 +383,7 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     for (const k of [...act.drafts.keys()]) if (k.startsWith(`${q.id}|`)) act.drafts.delete(k)
     act.currentQuestionId = q.id
     bump(act)
+    act.resultsVersion = act.version
     res.status(204).end()
   })
 
@@ -393,11 +404,48 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
     return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
   }
 
-  app.get('/api/activities/:code/export.xlsx', requireTeacher, loadActivity, (req, res) => {
-    // mock 不寫回 Excel；回傳佔位內容，只用來驗證前端會觸發下載
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', contentDisposition(`${req.act.code}_answers.xlsx`))
-    res.send(Buffer.from('mock xlsx placeholder'))
+  /** 每一題已結束、目前輪次順位 1 的提交，依 blankId 對應到 cellRef */
+  function sheetWritePlan(act) {
+    const cells = []
+    const skippedQuestions = []
+    for (const q of act.questions) {
+      const winner = q.status === 'closed' ? subsOf(act, q.id).find((s) => s.rank === 1) : null
+      if (!winner) {
+        skippedQuestions.push(q.number)
+        continue
+      }
+      for (const b of q.blanks) {
+        const a = winner.answers.find((x) => x.blankId === b.id)
+        if (a) cells.push({ cellRef: b.cellRef, value: a.text })
+      }
+    }
+    return { cells, skippedQuestions }
+  }
+
+  app.post('/api/activities/:code/export-to-sheet', requireTeacher, loadActivity, (req, res) => {
+    const act = req.act
+    if (act.writeMode === 'readonly') {
+      return sendError(res, 403, 'SHEET_READ_ONLY', '試算表只有檢視權限', { shareWith: SHARE_WITH })
+    }
+    if (act.writeMode === 'changed') {
+      return sendError(res, 409, 'SHEET_CHANGED', '試算表的題目結構已變更', {
+        details: '第 3 題的作答格位置已改變',
+      })
+    }
+    const basedOnVersion = req.body?.basedOnVersion
+    if (!Number.isInteger(basedOnVersion) || act.resultsVersion > basedOnVersion) {
+      return sendError(res, 409, 'STALE_VERSION', '結果已更新，請重新確認')
+    }
+    const { cells, skippedQuestions } = sheetWritePlan(act)
+    if (cells.length === 0) return sendError(res, 409, 'NOTHING_TO_EXPORT', '目前沒有可寫回的結果')
+    // 以下在同一個同步區塊中完成：任何錯誤都在這之前回傳，失敗時不會留下寫入紀錄
+    const exportedAt = new Date().toISOString()
+    const log = state.sheetWrites.get(act.code) ?? []
+    log.push({ exportedAt, cells })
+    state.sheetWrites.set(act.code, log)
+    act.sheet.lastExportedAt = exportedAt
+    bump(act)
+    res.json({ sheetUrl: act.sheet.url, writtenCells: cells.length, skippedQuestions, exportedAt })
   })
 
   app.get('/api/activities/:code/export.csv', requireTeacher, loadActivity, (req, res) => {
@@ -510,9 +558,13 @@ export function createMockServer({ teacherPassword, testHooks = false } = {}) {
       bump(act)
       res.status(204).end()
     })
+    hooks.get('/sheetWrites', (req, res) => {
+      const code = String(req.query.code ?? '').toUpperCase()
+      res.json(state.sheetWrites.get(code) ?? [])
+    })
     hooks.post('/forceError', (req, res) => {
-      const { method, path, status, code, message, times = 1 } = req.body ?? {}
-      state.forced.push({ method, path, status, code, message, times })
+      const { method, path, status, code, message, details, shareWith, times = 1 } = req.body ?? {}
+      state.forced.push({ method, path, status, code, message, details, shareWith, times })
       res.status(204).end()
     })
     hooks.post('/skipVersions', (req, res) => {

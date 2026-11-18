@@ -35,8 +35,28 @@ describe('rest 錯誤轉換', () => {
           { status: 422 },
         ),
     )
-    const err = await api.upload(new File(['a'], 'a.xlsx')).catch((e) => e)
+    const err = await api.importSheet('https://docs.google.com/spreadsheets/d/x').catch((e) => e)
     expect(err).toMatchObject({ status: 422, code: 'PARSE_FAILED', details: '找不到表頭' })
+    expect(err.shareWith).toBeUndefined()
+  })
+
+  it('保留 shareWith', async () => {
+    mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: { code: 'SHEET_NOT_SHARED', message: 'x', shareWith: 'bot@example.iam.gserviceaccount.com' },
+          }),
+          { status: 403 },
+        ),
+    )
+    const err = await api.importSheet('https://docs.google.com/spreadsheets/d/x').catch((e) => e)
+    expect(err).toBeInstanceOf(RestError)
+    expect(err).toMatchObject({
+      status: 403,
+      code: 'SHEET_NOT_SHARED',
+      shareWith: 'bot@example.iam.gserviceaccount.com',
+    })
   })
 
   it('網路錯誤轉成 NETWORK_ERROR', async () => {
@@ -65,5 +85,47 @@ describe('rest 錯誤轉換', () => {
       round: 2,
       answers: [{ blankId: 'b1', text: 'CPU' }],
     })
+  })
+})
+
+describe('試算表相關請求', () => {
+  function capture(status: number, body: unknown) {
+    const seen: { url: string; init: RequestInit }[] = []
+    mockFetch(async (url, init) => {
+      seen.push({ url, init })
+      return new Response(JSON.stringify(body), { status })
+    })
+    return seen
+  }
+  const jsonBody = (init: RequestInit) => JSON.parse(init.body as string)
+
+  it('匯入：POST /api/sheets/import { sheetUrl }', async () => {
+    const seen = capture(200, { importId: 'i1' })
+    const url = 'https://docs.google.com/spreadsheets/d/abc/edit'
+    await expect(api.importSheet(url)).resolves.toEqual({ importId: 'i1' })
+    expect(seen[0].url).toBe('/api/sheets/import')
+    expect(seen[0].init.method).toBe('POST')
+    expect(jsonBody(seen[0].init)).toEqual({ sheetUrl: url })
+  })
+
+  it('建立活動：POST /api/activities { importId, groupCount }', async () => {
+    const seen = capture(201, {})
+    await api.createActivity('i1', 6)
+    expect(seen[0].url).toBe('/api/activities')
+    expect(jsonBody(seen[0].init)).toEqual({ importId: 'i1', groupCount: 6 })
+  })
+
+  it('寫回：POST /api/activities/:code/export-to-sheet { basedOnVersion }', async () => {
+    const seen = capture(200, { writtenCells: 3 })
+    await expect(api.exportToSheet('ABC234', 12)).resolves.toEqual({ writtenCells: 3 })
+    expect(seen[0].url).toBe('/api/activities/ABC234/export-to-sheet')
+    expect(seen[0].init.method).toBe('POST')
+    expect(jsonBody(seen[0].init)).toEqual({ basedOnVersion: 12 })
+  })
+
+  it('不再提供上傳與 Excel 下載', () => {
+    expect(api).not.toHaveProperty('upload')
+    expect(api).not.toHaveProperty('exportXlsxUrl')
+    expect(api.exportCsvUrl('ABC234')).toBe('/api/activities/ABC234/export.csv')
   })
 })

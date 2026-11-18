@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 // @ts-expect-error mock 是 JS 模組，沒有型別宣告
 import { createMockServer } from '../../../mock/server.js'
 // @ts-expect-error mock 是 JS 模組，沒有型別宣告
-import { agent, until } from '../../../mock/testkit.js'
+import { agent, createActivity, until } from '../../../mock/testkit.js'
 import { openSocket } from './socket'
 import type { Snapshot } from './types'
 
@@ -21,8 +21,7 @@ describe('openSocket（對 mock 連線）', () => {
   it('connected 狀態正確變化，且連線與重連後都會收到新的快照', async () => {
     const t = agent(base)
     await t.post('/api/teacher/login', { password: PASSWORD })
-    const up = await t.upload('/api/uploads', 'a.xlsx')
-    const code = (await t.post('/api/activities', { uploadId: up.body.uploadId, groupCount: 2 })).body.activity.code
+    const code = (await createActivity(t, 'mock-single', 2)).activity.code
     const s = agent(base)
     await s.post(`/api/activities/${code}/join`, { nickname: '小明' })
 
@@ -55,8 +54,7 @@ describe('openSocket（對 mock 連線）', () => {
   it('伺服器拒絕連線時會稍後重試', async () => {
     const t = agent(base)
     await t.post('/api/teacher/login', { password: PASSWORD })
-    const up = await t.upload('/api/uploads', 'a.xlsx')
-    const code = (await t.post('/api/activities', { uploadId: up.body.uploadId, groupCount: 2 })).body.activity.code
+    const code = (await createActivity(t, 'mock-single', 2)).activity.code
     const states: boolean[] = []
     const live = openSocket(
       code,

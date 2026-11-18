@@ -10,7 +10,8 @@
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "check:secrets": "node scripts/check-no-secrets.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -19,7 +20,6 @@
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.6.1",
     "express": "^4.22.3",
-    "multer": "^2.5.0",
     "socket.io": "^4.8.4",
     "socket.io-client": "^4.8.4",
     "vue": "^3.5.45",

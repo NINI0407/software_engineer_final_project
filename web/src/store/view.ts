@@ -64,3 +64,42 @@ export const teacherButtons = {
   },
   canSetLeader: (m: Member) => !m.isLeader,
 }
+
+/** 寫回試算表前，確認視窗中每一題的預覽（design G5） */
+export type SheetWriteItem =
+  | {
+      kind: 'write'
+      question: TeacherQuestion
+      groupName: string
+      cells: { label: string | null; cellRef: string; text: string }[]
+    }
+  | { kind: 'noAnswer'; question: TeacherQuestion }
+  | { kind: 'open'; question: TeacherQuestion }
+  | { kind: 'idle'; question: TeacherQuestion }
+
+/**
+ * 依快照計算每一題會不會寫入、寫到哪幾格。只是把快照換個方式顯示：
+ * 實際寫入的內容以後端為準。`results` 只含已結束題目目前輪次的提交，所以重開過的題目只看最後一輪。
+ */
+export function sheetWritePlan(s: TeacherSnapshot): SheetWriteItem[] {
+  return [...s.questions]
+    .sort((a, b) => a.number - b.number)
+    .map((question): SheetWriteItem => {
+      if (question.status === 'open') return { kind: 'open', question }
+      if (question.status === 'idle') return { kind: 'idle', question }
+      const result = s.results.find((r) => r.questionId === question.id)
+      const winner = result?.winnerGroupId
+        ? result.submissions.find((x) => x.groupId === result.winnerGroupId)
+        : undefined
+      if (!winner) return { kind: 'noAnswer', question }
+      const groupName = s.activity.groups.find((g) => g.id === winner.groupId)?.name ?? winner.groupId
+      const cells = question.blanks.flatMap((b) => {
+        const a = winner.answers.find((x) => x.blankId === b.id)
+        return a ? [{ label: b.label, cellRef: b.cellRef, text: a.text }] : []
+      })
+      return cells.length ? { kind: 'write', question, groupName, cells } : { kind: 'noAnswer', question }
+    })
+}
+
+/** 是否有任何可寫回的格子（「寫回試算表」按鈕的可用條件之一） */
+export const hasSheetWrites = (s: TeacherSnapshot) => sheetWritePlan(s).some((x) => x.kind === 'write')

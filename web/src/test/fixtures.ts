@@ -37,6 +37,12 @@ export function teacherSnap(over: Partial<TeacherSnapshot> = {}): TeacherSnapsho
     groupLocked: false,
     groups: [],
     results: [],
+    sheet: {
+      spreadsheetTitle: '測試試算表',
+      worksheetTitle: 'S',
+      url: 'https://docs.google.com/spreadsheets/d/test/edit',
+      lastExportedAt: null,
+    },
     ...over,
   }
 }

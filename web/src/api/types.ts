@@ -107,20 +107,43 @@ export interface TeacherSnapshot {
   groupLocked: boolean
   groups: TeacherGroupState[]
   results: Result[]
+  /** 活動綁定的線上試算表；只出現在老師快照，學生快照沒有 */
+  sheet: SheetInfo
+}
+
+export interface SheetInfo {
+  spreadsheetTitle: string
+  worksheetTitle: string
+  url: string
+  /** ISO 8601；尚未寫回時為 null */
+  lastExportedAt: string | null
 }
 
 export type Snapshot = StudentSnapshot | TeacherSnapshot
 
-export interface UploadPreview {
-  uploadId: string
-  fileName: string
+/** POST /api/sheets/import 的回應 */
+export interface SheetImportPreview {
+  importId: string
+  sheetUrl: string
+  spreadsheetTitle: string
+  worksheetTitle: string
   questions: { number: number; blanks: { label: string | null; cellRef: string }[] }[]
   warnings: string[]
 }
 
+/** POST /api/activities/:code/export-to-sheet 的回應 */
+export interface ExportToSheetResult {
+  sheetUrl: string
+  writtenCells: number
+  /** 沒有寫入的題號（未結束、無人作答） */
+  skippedQuestions: number[]
+  /** ISO 8601 */
+  exportedAt: string
+}
+
 /** 後端錯誤回應格式 */
 export interface ErrorBody {
-  error: { code: string; message: string; details?: string }
+  error: { code: string; message: string; details?: string; shareWith?: string }
 }
 
 /** 前端統一使用的錯誤物件 */
@@ -129,6 +152,8 @@ export interface ApiError {
   code: string
   message: string
   details?: string
+  /** 需要老師調整共用設定時，要共用給誰的 email（公開資訊，不是憑證） */
+  shareWith?: string
 }
 
 /** Socket.IO 事件內容 */

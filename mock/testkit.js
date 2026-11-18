@@ -3,12 +3,11 @@ import { io as ioClient } from 'socket.io-client'
 
 export function agent(base) {
   const jar = new Map()
-  async function call(method, path, body, { form } = {}) {
+  async function call(method, path, body) {
     const headers = {}
     if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
     let payload
-    if (form) payload = form
-    else if (body !== undefined) {
+    if (body !== undefined) {
       headers['content-type'] = 'application/json'
       payload = JSON.stringify(body)
     }
@@ -34,13 +33,20 @@ export function agent(base) {
     get: (p) => call('GET', p),
     post: (p, b) => call('POST', p, b),
     put: (p, b) => call('PUT', p, b),
-    upload: (p, name, content = 'x') => {
-      const fd = new FormData()
-      fd.append('file', new Blob([content]), name)
-      return call('POST', p, undefined, { form: fd })
-    },
     cookieHeader: () => [...jar].map(([k, v]) => `${k}=${v}`).join('; '),
   }
+}
+
+/** mock 用的測試試算表網址；id 中的關鍵字決定匯入與寫回的結果（design.md G6） */
+export const sheetUrl = (id) => `https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`
+
+/** 老師匯入試算表並建立活動，回傳 201 的 TeacherSnapshot */
+export async function createActivity(t, id = 'mock-single', groupCount = 3) {
+  const imp = await t.post('/api/sheets/import', { sheetUrl: sheetUrl(id) })
+  if (imp.status !== 200) throw new Error(`import failed: ${imp.status} ${imp.text}`)
+  const res = await t.post('/api/activities', { importId: imp.body.importId, groupCount })
+  if (res.status !== 201) throw new Error(`create failed: ${res.status} ${res.text}`)
+  return res.body
 }
 
 export function connect(base, a, code, role) {

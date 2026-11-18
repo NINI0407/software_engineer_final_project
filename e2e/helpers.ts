@@ -1,23 +1,29 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test'
 
 export const MOCK = 'http://localhost:3100'
 export const BASE = 'http://localhost:5174'
 export const PASSWORD = () => process.env.E2E_TEACHER_PASSWORD as string
 
-const samplePath = (name: string) => fileURLToPath(new URL(`../samples/${name}`, import.meta.url))
-const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const sheet = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`
 
-export const FILES = {
-  single: { name: '軟工期末專案_單題_範例.xlsx', mimeType: XLSX, buffer: readFileSync(samplePath('軟工期末專案_單題_範例.xlsx')) },
-  group: { name: '軟工期末專案_題組_範例.xlsx', mimeType: XLSX, buffer: readFileSync(samplePath('軟工期末專案_題組_範例.xlsx')) },
-  /** 另一份 Guided Notes：mock 依檔名回傳 9 題、不同儲存格位置的預覽 */
-  variant: { name: '另一份_變體.xlsx', mimeType: XLSX, buffer: readFileSync(samplePath('軟工期末專案_單題_範例.xlsx')) },
-  invalid: { name: 'invalid_notes.xlsx', mimeType: XLSX, buffer: Buffer.from('x') },
-  notXlsx: { name: 'notes.csv', mimeType: 'text/csv', buffer: Buffer.from('a,b') },
+/** mock 的測試試算表網址：網址中的關鍵字決定匯入與寫回的結果（design.md G6） */
+export const SHEETS = {
+  single: sheet('mock-single'),
+  group: sheet('mock-group'),
+  /** 另一份 Guided Notes：9 題、儲存格位置不同 */
+  variant: sheet('mock-variant'),
+  invalid: sheet('mock-invalid'),
+  notShared: sheet('mock-notshared'),
+  missing: sheet('mock-missing'),
+  noWorksheet: sheet('mock-noworksheet'),
+  /** 匯入正常，寫回時 403 SHEET_READ_ONLY */
+  readonly: sheet('mock-readonly'),
+  /** 匯入正常，寫回時 409 SHEET_CHANGED */
+  changed: sheet('mock-changed'),
+  notASheet: 'https://example.com/not-a-sheet',
 }
-export type FileKind = keyof typeof FILES
+export type SheetKind = keyof typeof SHEETS
+export const SHARE_WITH = 'quiz-bot@mock.invalid'
 
 /** 呼叫 mock 測試鉤子 */
 export async function hook(path: string, body: unknown = {}) {
@@ -30,10 +36,32 @@ export async function hook(path: string, body: unknown = {}) {
   return res.status === 204 ? null : res.json()
 }
 
-export const reset = () => hook('reset')
+/** 由 newContext 建立、尚未關閉的瀏覽器 context（Playwright 不會自動關閉手動建立的 context） */
+const openContexts = new Set<BrowserContext>()
+
+/**
+ * 每個測試開始前：先關閉上一個測試留下的 context，再清空 mock 狀態。
+ * 否則上一個測試的頁面在 reset 後會持續嘗試重新連線，累積下來會拖慢後面測試的連線。
+ */
+export async function reset() {
+  await Promise.all([...openContexts].map((c) => c.close().catch(() => {})))
+  openContexts.clear()
+  await hook('reset')
+}
+
+/** 讀取 mock 的試算表寫入紀錄 */
+export async function sheetWrites(code: string): Promise<{ exportedAt: string; cells: { cellRef: string; value: string }[] }[]> {
+  const res = await fetch(`${MOCK}/__mock/sheetWrites?code=${code}`)
+  expect(res.ok).toBeTruthy()
+  return res.json()
+}
 
 /** 每個 context 有獨立的 Cookie，等同一位獨立的使用者 */
-export const newContext = (browser: Browser) => browser.newContext({ baseURL: BASE })
+export async function newContext(browser: Browser) {
+  const ctx = await browser.newContext({ baseURL: BASE })
+  openContexts.add(ctx)
+  return ctx
+}
 
 export async function teacherContext(browser: Browser) {
   const ctx = await newContext(browser)
@@ -42,11 +70,11 @@ export async function teacherContext(browser: Browser) {
   return ctx
 }
 
-export async function createActivity(ctx: BrowserContext, kind: FileKind = 'single', groupCount = 3) {
-  const up = await ctx.request.post('/api/uploads', { multipart: { file: FILES[kind] } })
-  expect(up.ok()).toBeTruthy()
-  const { uploadId } = await up.json()
-  const res = await ctx.request.post('/api/activities', { data: { uploadId, groupCount } })
+export async function createActivity(ctx: BrowserContext, kind: SheetKind = 'single', groupCount = 3) {
+  const imp = await ctx.request.post('/api/sheets/import', { data: { sheetUrl: SHEETS[kind] } })
+  expect(imp.ok()).toBeTruthy()
+  const { importId } = await imp.json()
+  const res = await ctx.request.post('/api/activities', { data: { importId, groupCount } })
   expect(res.status()).toBe(201)
   return (await res.json()).activity.code as string
 }

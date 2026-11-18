@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createMockServer } from './server.js'
-import { agent, connect, until, wait } from './testkit.js'
+import { agent, connect, createActivity, sheetUrl, until, wait } from './testkit.js'
 
 const PASSWORD = crypto.randomBytes(9).toString('base64url')
 
@@ -29,12 +31,8 @@ async function teacher() {
   return t
 }
 
-async function activity(t, file = '軟工期末專案_單題_範例.xlsx', groupCount = 3) {
-  const up = await t.upload('/api/uploads', file)
-  const res = await t.post('/api/activities', { uploadId: up.body.uploadId, groupCount })
-  expect(res.status).toBe(201)
-  return res.body
-}
+const activity = (t, id = 'mock-single', groupCount = 3) => createActivity(t, id, groupCount)
+const importSheet = (t, id) => t.post('/api/sheets/import', { sheetUrl: sheetUrl(id) })
 
 async function student(code, nickname, groupId) {
   const s = agent(base)
@@ -85,48 +83,99 @@ describe('3.2 老師 REST', () => {
     expect((await t.get('/api/teacher/session')).body).toEqual({ authenticated: false })
   })
 
-  it('上傳需要登入；依檔名回傳預覽或錯誤', async () => {
-    expect((await agent(base).upload('/api/uploads', 'a.xlsx')).status).toBe(401)
+  it('匯入需要登入；依網址回傳預覽（含試算表標題與工作表名稱）', async () => {
+    expect((await importSheet(agent(base), 'mock-single')).status).toBe(401)
     const t = await teacher()
-    const notX = await t.upload('/api/uploads', 'notes.csv')
-    expect(notX.status).toBe(400)
-    expect(notX.body.error.code).toBe('NOT_XLSX')
-    const inv = await t.upload('/api/uploads', 'invalid.xlsx')
-    expect(inv.status).toBe(422)
-    expect(inv.body.error).toMatchObject({ code: 'PARSE_FAILED', details: '找不到題號/作答表頭' })
-
-    const single = await t.upload('/api/uploads', '軟工期末專案_單題_範例.xlsx')
-    expect(single.body.fileName).toBe('軟工期末專案_單題_範例.xlsx')
+    const single = await importSheet(t, 'mock-single')
+    expect(single.status).toBe(200)
+    expect(single.body).toMatchObject({
+      sheetUrl: 'https://docs.google.com/spreadsheets/d/mock-single/edit',
+      spreadsheetTitle: '軟工期末專案_單題_範例',
+      worksheetTitle: '學習單',
+      warnings: [],
+    })
+    expect(single.body.importId).toMatch(/^[a-f0-9]+$/)
     expect(single.body.questions).toHaveLength(6)
     expect(single.body.questions.map((q) => q.blanks[0].cellRef)).toEqual(
       [5, 7, 9, 11, 13, 15].map((r) => `學習單!G${r}`),
     )
-    const group = await t.upload('/api/uploads', '軟工期末專案_題組_範例.xlsx')
+    const group = await importSheet(t, 'mock-group')
     expect(group.body.questions).toHaveLength(4)
     expect(group.body.questions[0].blanks).toEqual([
       { label: '（1）', cellRef: '學習單!H5' },
       { label: '（2）', cellRef: '學習單!H6' },
     ])
-    const variant = await t.upload('/api/uploads', '另一份_變體.xlsx')
+    expect(group.body.questions[1].blanks.map((b) => b.label)).toEqual(['（1）', '（2）'])
+    const variant = await importSheet(t, 'mock-VARIANT') // 關鍵字不分大小寫
+    expect(variant.body).toMatchObject({ worksheetTitle: '講義B' })
     expect(variant.body.questions).toHaveLength(9)
-    expect(variant.body.warnings.length).toBeGreaterThan(0)
+    expect(variant.body.questions[0].blanks[0].cellRef).toBe('講義B!E8')
+    expect(variant.body.warnings).toHaveLength(1)
+    // readonly、changed：匯入正常，留到寫回時才失敗
+    for (const id of ['mock-readonly', 'mock-changed', 'abc123']) {
+      const r = await importSheet(t, id)
+      expect([r.status, r.body.questions.length]).toEqual([200, 6])
+    }
   })
 
-  it('建立活動的錯誤與成功', async () => {
+  it('匯入錯誤：網址格式、沒有共用、找不到試算表、找不到工作表、解析失敗', async () => {
     const t = await teacher()
-    const up = await t.upload('/api/uploads', 'a.xlsx')
-    const bad = await t.post('/api/activities', { uploadId: up.body.uploadId, groupCount: 1 })
+    for (const bad of ['https://example.com/not-a-sheet', '', 'docs.google.com/spreadsheets/d/x', undefined]) {
+      const r = await t.post('/api/sheets/import', { sheetUrl: bad })
+      expect([r.status, r.body.error.code]).toEqual([400, 'INVALID_SHEET_URL'])
+    }
+    const ns = await importSheet(t, 'mock-notshared')
+    expect(ns.status).toBe(403)
+    expect(ns.body.error).toMatchObject({ code: 'SHEET_NOT_SHARED', shareWith: 'quiz-bot@mock.invalid' })
+    const missing = await importSheet(t, 'mock-missing')
+    expect([missing.status, missing.body.error.code]).toEqual([404, 'SHEET_NOT_FOUND'])
+    const nw = await importSheet(t, 'mock-noworksheet')
+    expect(nw.status).toBe(422)
+    expect(nw.body.error).toMatchObject({ code: 'WORKSHEET_NOT_FOUND', details: '網址指定的工作表不存在' })
+    const inv = await importSheet(t, 'mock-invalid')
+    expect(inv.status).toBe(422)
+    expect(inv.body.error).toMatchObject({ code: 'PARSE_FAILED', details: '找不到題號/作答表頭' })
+  })
+
+  it('舊路徑已移除：POST /api/uploads 與 GET export.xlsx 回 404', async () => {
+    const t = await teacher()
+    expect((await t.post('/api/uploads', {})).status).toBe(404)
+    const { activity: a } = await activity(t)
+    expect((await t.get(`/api/activities/${a.code}/export.xlsx`)).status).toBe(404)
+  })
+
+  it('建立活動的錯誤與成功；老師快照有 sheet', async () => {
+    const t = await teacher()
+    const imp = await importSheet(t, 'mock-single')
+    const bad = await t.post('/api/activities', { importId: imp.body.importId, groupCount: 1 })
     expect(bad.body.error.code).toBe('INVALID_GROUP_COUNT')
-    const missing = await t.post('/api/activities', { uploadId: 'nope', groupCount: 3 })
+    const missing = await t.post('/api/activities', { importId: 'nope', groupCount: 3 })
     expect(missing.status).toBe(404)
-    expect(missing.body.error.code).toBe('UPLOAD_NOT_FOUND')
-    const ok = await t.post('/api/activities', { uploadId: up.body.uploadId, groupCount: 3 })
+    expect(missing.body.error.code).toBe('IMPORT_NOT_FOUND')
+    const ok = await t.post('/api/activities', { importId: imp.body.importId, groupCount: 3 })
     expect(ok.status).toBe(201)
     expect(ok.body.activity.code).toMatch(/^[A-HJ-NP-Z2-9]{6}$/)
     expect(ok.body.activity.groups.map((g) => g.name)).toEqual(['第 1 組', '第 2 組', '第 3 組'])
     expect(ok.body.questions[0].blanks[0].cellRef).toBe('學習單!G5')
+    expect(ok.body.sheet).toEqual({
+      spreadsheetTitle: '軟工期末專案_單題_範例',
+      worksheetTitle: '學習單',
+      url: 'https://docs.google.com/spreadsheets/d/mock-single/edit',
+      lastExportedAt: null,
+    })
+    expect(ok.body.activity).not.toHaveProperty('sheet')
     expect((await t.get('/api/activities/ZZZZZZ/teacher')).body.error.code).toBe('ACTIVITY_NOT_FOUND')
     expect((await agent(base).get(`/api/activities/${ok.body.activity.code}/teacher`)).status).toBe(401)
+  })
+
+  it('學生快照不含任何試算表網址、標題或 cellRef', async () => {
+    const t = await teacher()
+    const { activity: a } = await activity(t, 'mock-group')
+    const s = await student(a.code, '小明', 'g1')
+    const raw = (await s.get(`/api/activities/${a.code}/student`)).text
+    for (const leak of ['docs.google.com', 'mock-group', '軟工期末專案_題組_範例', '學習單', 'cellRef', 'sheet']) {
+      expect(raw).not.toContain(leak)
+    }
   })
 
   it('開始、結束、重開的狀態錯誤', async () => {
@@ -147,7 +196,7 @@ describe('3.2 老師 REST', () => {
     expect((await q('q2', 'reopen')).body.error.code).toBe('INVALID_STATE')
   })
 
-  it('轉移組長與匯出', async () => {
+  it('轉移組長與匯出 CSV', async () => {
     const t = await teacher()
     const { activity: a } = await activity(t)
     const s1 = await student(a.code, '小明', 'g1')
@@ -159,8 +208,6 @@ describe('3.2 老師 REST', () => {
     expect((await s2.get(`/api/activities/${a.code}/student`)).body.me.isLeader).toBe(true)
     expect((await s1.get(`/api/activities/${a.code}/student`)).body.me.isLeader).toBe(false)
 
-    const x = await t.get(`/api/activities/${a.code}/export.xlsx`)
-    expect(x.headers.get('content-disposition')).toContain(`${a.code}_answers.xlsx`)
     const c = await t.get(`/api/activities/${a.code}/export.csv`)
     expect(c.headers.get('content-disposition')).toContain(`${a.code}_results.csv`)
     expect(c.text.replace('﻿', '').split('\r\n')[0]).toBe('題號,組別,答案,搶答順位')
@@ -172,7 +219,7 @@ describe('3.3 學生 REST', () => {
   let t, code
   beforeEach(async () => {
     t = await teacher()
-    code = (await activity(t, '軟工期末專案_題組_範例.xlsx')).activity.code
+    code = (await activity(t, 'mock-group')).activity.code
   })
   const open = (id) => t.post(`/api/activities/${code}/questions/${id}/open`)
   const submit = (s, id, round, answers) =>
@@ -409,6 +456,254 @@ describe('3.5 測試鉤子', () => {
       expect(r.status).toBe(404)
     } finally {
       await off.close()
+    }
+  })
+})
+
+describe('寫回試算表（模擬）', () => {
+  // 建立活動與三組各一位組長，回傳操作題目、送出、寫回與讀取寫入紀錄的小工具
+  async function setup(id = 'mock-single') {
+    const t = await teacher()
+    const snap = await activity(t, id)
+    const code = snap.activity.code
+    const g = {
+      g1: await student(code, 'A', 'g1'),
+      g2: await student(code, 'B', 'g2'),
+      g3: await student(code, 'C', 'g3'),
+    }
+    const qs = Object.fromEntries(snap.questions.map((q) => [q.id, { ...q, round: 1 }]))
+    const call = (qid, act) => t.post(`/api/activities/${code}/questions/${qid}/${act}`)
+    const submit = (gid, qid, texts) => {
+      const q = qs[qid]
+      return g[gid].post(`/api/activities/${code}/questions/${qid}/submissions`, {
+        round: q.round,
+        answers: q.blanks.map((b, i) => ({ blankId: b.id, text: texts[i] })),
+      })
+    }
+    const version = async () => (await t.get(`/api/activities/${code}/teacher`)).body.version
+    const exportToSheet = async (basedOnVersion) =>
+      t.post(`/api/activities/${code}/export-to-sheet`, { basedOnVersion: basedOnVersion ?? (await version()) })
+    const writes = async () => (await fetch(`${base}/__mock/sheetWrites?code=${code}`)).json()
+    return { t, code, g, qs, call, submit, version, exportToSheet, writes }
+  }
+
+  it('單題：寫入順位 1 的答案到對應的儲存格，並更新 lastExportedAt', async () => {
+    const x = await setup('mock-single')
+    await x.call('q1', 'open')
+    expect((await x.submit('g2', 'q1', ['光合作用'])).status).toBe(201)
+    expect((await x.submit('g1', 'q1', ['呼吸作用'])).status).toBe(201)
+    await x.call('q1', 'close')
+    const r = await x.exportToSheet()
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({
+      sheetUrl: 'https://docs.google.com/spreadsheets/d/mock-single/edit',
+      writtenCells: 1,
+      skippedQuestions: [2, 3, 4, 5, 6],
+    })
+    const log = await x.writes()
+    expect(log).toHaveLength(1)
+    expect(log[0].cells).toEqual([{ cellRef: '學習單!G5', value: '光合作用' }])
+    expect(log[0].exportedAt).toBe(r.body.exportedAt)
+    const snap = (await x.t.get(`/api/activities/${x.code}/teacher`)).body
+    expect(snap.sheet.lastExportedAt).toBe(r.body.exportedAt)
+  })
+
+  it('變體試算表寫入變體的儲存格位置', async () => {
+    const x = await setup('mock-variant')
+    await x.call('q1', 'open')
+    await x.submit('g3', 'q1', ['答案A'])
+    await x.call('q1', 'close')
+    expect((await x.exportToSheet()).status).toBe(200)
+    expect((await x.writes())[0].cells).toEqual([{ cellRef: '講義B!E8', value: '答案A' }])
+  })
+
+  it('題組：子填空逐格寫入', async () => {
+    const x = await setup('mock-group')
+    await x.call('q1', 'open')
+    await x.submit('g2', 'q1', ['CPU', '作業系統'])
+    await x.call('q1', 'close')
+    expect((await x.exportToSheet()).body.writtenCells).toBe(2)
+    expect((await x.writes())[0].cells).toEqual([
+      { cellRef: '學習單!H5', value: 'CPU' },
+      { cellRef: '學習單!H6', value: '作業系統' },
+    ])
+  })
+
+  it('重開後以最後一輪的順位 1 為準', async () => {
+    const x = await setup('mock-single')
+    await x.call('q1', 'open')
+    await x.submit('g1', 'q1', ['第一輪'])
+    await x.call('q1', 'close')
+    await x.call('q1', 'reopen')
+    x.qs.q1.round = 2
+    await x.submit('g3', 'q1', ['第二輪'])
+    await x.submit('g1', 'q1', ['第二輪慢'])
+    await x.call('q1', 'close')
+    expect((await x.exportToSheet()).status).toBe(200)
+    expect((await x.writes())[0].cells).toEqual([{ cellRef: '學習單!G5', value: '第二輪' }])
+  })
+
+  it('無人作答與進行中的題目不寫入，列在 skippedQuestions', async () => {
+    const x = await setup('mock-single')
+    await x.call('q1', 'open')
+    await x.submit('g1', 'q1', ['答案'])
+    await x.call('q1', 'close')
+    await x.call('q2', 'open')
+    await x.call('q2', 'close')
+    await x.call('q3', 'open')
+    await x.submit('g2', 'q3', ['進行中'])
+    const r = await x.exportToSheet()
+    expect(r.body.writtenCells).toBe(1)
+    expect(r.body.skippedQuestions).toEqual(expect.arrayContaining([2, 3]))
+    expect(r.body.skippedQuestions).not.toContain(1)
+    expect(JSON.stringify(await x.writes())).not.toContain('進行中')
+  })
+
+  it('沒有可寫入的格子：409 NOTHING_TO_EXPORT，不產生紀錄', async () => {
+    const x = await setup('mock-single')
+    const r = await x.exportToSheet()
+    expect([r.status, r.body.error.code]).toEqual([409, 'NOTHING_TO_EXPORT'])
+    await x.call('q1', 'open')
+    await x.call('q1', 'close') // 無人作答
+    expect((await x.exportToSheet()).body.error.code).toBe('NOTHING_TO_EXPORT')
+    expect(await x.writes()).toEqual([])
+  })
+
+  it('確認後結果變動：409 STALE_VERSION；只有出席變動時正常寫回', async () => {
+    const x = await setup('mock-single')
+    await x.call('q1', 'open')
+    await x.submit('g1', 'q1', ['答案'])
+    await x.call('q1', 'close')
+    const confirmedAt = await x.version()
+    // 之後又結束一題 → 結果變動
+    await x.call('q2', 'open')
+    await x.call('q2', 'close')
+    const stale = await x.exportToSheet(confirmedAt)
+    expect([stale.status, stale.body.error.code]).toEqual([409, 'STALE_VERSION'])
+    expect(await x.writes()).toEqual([])
+
+    // 只有出席變動：version 遞增，但結果沒變
+    const v = await x.version()
+    const id = (await x.g.g1.get(`/api/activities/${x.code}/student`)).body.me.clientId
+    await hook('presence', { code: x.code, clientId: id, online: false })
+    await hook('presence', { code: x.code, clientId: id, online: true })
+    expect(await x.version()).toBe(v + 2)
+    expect((await x.exportToSheet(v)).status).toBe(200)
+  })
+
+  it('readonly：403 SHEET_READ_ONLY 附 shareWith；changed：409 SHEET_CHANGED 附 details；都不產生紀錄', async () => {
+    for (const [id, status, error] of [
+      ['mock-readonly', 403, { code: 'SHEET_READ_ONLY', shareWith: 'quiz-bot@mock.invalid' }],
+      ['mock-changed', 409, { code: 'SHEET_CHANGED', details: '第 3 題的作答格位置已改變' }],
+    ]) {
+      await hook('reset')
+      const x = await setup(id)
+      await x.call('q1', 'open')
+      await x.submit('g1', 'q1', ['答案'])
+      await x.call('q1', 'close')
+      const r = await x.exportToSheet()
+      expect(r.status).toBe(status)
+      expect(r.body.error).toMatchObject(error)
+      expect(await x.writes()).toEqual([])
+      expect((await x.t.get(`/api/activities/${x.code}/teacher`)).body.sheet.lastExportedAt).toBeNull()
+    }
+  })
+
+  it('需要老師身分', async () => {
+    const x = await setup()
+    const r = await agent(base).post(`/api/activities/${x.code}/export-to-sheet`, { basedOnVersion: 1 })
+    expect(r.status).toBe(401)
+  })
+})
+
+describe('寫入紀錄與 forceError 鉤子', () => {
+  it('forceError 套用在 export-to-sheet：502 不產生紀錄、不更新 lastExportedAt；reset 清空紀錄', async () => {
+    const t = await teacher()
+    const { activity: a } = await activity(t)
+    const s = await student(a.code, 'A', 'g1')
+    await t.post(`/api/activities/${a.code}/questions/q1/open`)
+    await s.post(`/api/activities/${a.code}/questions/q1/submissions`, {
+      round: 1,
+      answers: [{ blankId: 'q1b1', text: '答案' }],
+    })
+    await t.post(`/api/activities/${a.code}/questions/q1/close`)
+    const version = (await t.get(`/api/activities/${a.code}/teacher`)).body.version
+    const exportToSheet = () => t.post(`/api/activities/${a.code}/export-to-sheet`, { basedOnVersion: version })
+    const writes = (code = a.code) => fetch(`${base}/__mock/sheetWrites?code=${code}`).then((r) => r.json())
+
+    await hook('forceError', {
+      method: 'POST',
+      path: '/export-to-sheet',
+      status: 502,
+      code: 'SHEET_WRITE_FAILED',
+      message: '寫回失敗',
+    })
+    const failed = await exportToSheet()
+    expect([failed.status, failed.body.error.code]).toEqual([502, 'SHEET_WRITE_FAILED'])
+    expect(await writes()).toEqual([])
+    expect((await t.get(`/api/activities/${a.code}/teacher`)).body.sheet.lastExportedAt).toBeNull()
+
+    // forceError 也能附帶 shareWith
+    await hook('forceError', { path: '/export-to-sheet', status: 403, code: 'SHEET_READ_ONLY', shareWith: 'x@y.z' })
+    expect((await exportToSheet()).body.error).toMatchObject({ code: 'SHEET_READ_ONLY', shareWith: 'x@y.z' })
+
+    expect((await exportToSheet()).status).toBe(200)
+    expect(await writes()).toHaveLength(1)
+    expect(await writes(a.code.toLowerCase())).toHaveLength(1) // 代號不分大小寫
+
+    await hook('reset')
+    expect(await writes()).toEqual([])
+  })
+
+  it('非測試模式下 /__mock/sheetWrites 回 404', async () => {
+    const off = createMockServer({ teacherPassword: PASSWORD, testHooks: false })
+    const port = await off.listen(0)
+    try {
+      expect((await fetch(`http://localhost:${port}/__mock/sheetWrites?code=X`)).status).toBe(404)
+    } finally {
+      await off.close()
+    }
+  })
+})
+
+describe('不連線 Google 服務', () => {
+  it('完整流程中沒有任何對外連線', async () => {
+    const outbound = []
+    const original = net.Socket.prototype.connect
+    net.Socket.prototype.connect = function (...args) {
+      const first = Array.isArray(args[0]) ? args[0][0] : args[0]
+      const opts = typeof first === 'object' && first !== null ? first : { port: first, host: args[1] }
+      const host = opts.host ?? 'localhost'
+      if (!opts.path && !['localhost', '127.0.0.1', '::1'].includes(host)) outbound.push(host)
+      return original.apply(this, args)
+    }
+    try {
+      const t = await teacher()
+      const { activity: a } = await activity(t, 'mock-group')
+      const s = await student(a.code, 'A', 'g1')
+      await t.post(`/api/activities/${a.code}/questions/q1/open`)
+      await s.post(`/api/activities/${a.code}/questions/q1/submissions`, {
+        round: 1,
+        answers: [
+          { blankId: 'q1b1', text: 'a' },
+          { blankId: 'q1b2', text: 'b' },
+        ],
+      })
+      await t.post(`/api/activities/${a.code}/questions/q1/close`)
+      const v = (await t.get(`/api/activities/${a.code}/teacher`)).body.version
+      expect((await t.post(`/api/activities/${a.code}/export-to-sheet`, { basedOnVersion: v })).status).toBe(200)
+      expect((await t.get(`/api/activities/${a.code}/export.csv`)).status).toBe(200)
+    } finally {
+      net.Socket.prototype.connect = original
+    }
+    expect(outbound).toEqual([])
+  })
+
+  it('mock 的程式不讀取任何 Google 相關的環境變數', () => {
+    for (const f of ['server.js', 'fixtures.js', 'index.js']) {
+      const src = readFileSync(fileURLToPath(new URL(`./${f}`, import.meta.url)), 'utf8')
+      expect(src).not.toMatch(/process\.env\.[A-Z_]*GOOGLE/i)
+      expect(src).not.toMatch(/googleapis/i)
     }
   })
 })

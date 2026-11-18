@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, RestError } from '../api/rest'
 import type { TeacherQuestion, TeacherSnapshot } from '../api/types'
+import SheetExport from '../components/SheetExport.vue'
 import { describeError } from '../lib/errors'
 import { formatAnswers, groupName, GROUP_STATUS_TEXT, STATUS_TEXT } from '../lib/format'
 import { onSnapshot, requestResync, store } from '../store'
@@ -90,17 +91,13 @@ onUnmounted(() => {
 <template>
   <p v-if="loadError" class="msg error" role="alert">{{ loadError }}</p>
   <template v-if="snap">
-    <section class="card row" style="justify-content: space-between">
-      <div>
-        <div class="muted">活動代號</div>
-        <div class="code" data-testid="activity-code">{{ snap.activity.code }}</div>
-        <div class="muted">學生開啟 /join 並輸入此代號加入</div>
-      </div>
-      <div class="row">
-        <a class="btn" :href="api.exportXlsxUrl(code)" download data-testid="export-xlsx">匯出 Excel</a>
-        <a class="btn" :href="api.exportCsvUrl(code)" download data-testid="export-csv">下載 CSV</a>
-      </div>
+    <section class="card">
+      <div class="muted">活動代號</div>
+      <div class="code" data-testid="activity-code">{{ snap.activity.code }}</div>
+      <div class="muted">學生開啟 /join 並輸入此代號加入</div>
     </section>
+
+    <SheetExport :code="code" :snap="snap" :connected="connected" />
 
     <p v-if="message" class="msg error" data-testid="board-error" role="alert">{{ message }}</p>
 

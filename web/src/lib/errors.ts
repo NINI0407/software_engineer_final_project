@@ -1,6 +1,9 @@
-/** 錯誤碼 → 提示文字與前端額外動作（design D8 錯誤碼表） */
+/**
+ * 錯誤碼 → 提示文字與前端額外動作（design D8 錯誤碼表；試算表相關見 change
+ * switch-to-online-google-sheets 的 design G2）。提示中的〈details〉〈shareWith〉由 describeError 代入。
+ */
 
-export type ErrorAction = 'none' | 'resync' | 'clearPassword' | 'disableCreate' | 'restoreGroup'
+export type ErrorAction = 'none' | 'resync' | 'clearPassword' | 'clearPreview' | 'restoreGroup'
 
 export interface ErrorInfo {
   message: string
@@ -9,10 +12,22 @@ export interface ErrorInfo {
 
 export const ERROR_TABLE: Record<string, ErrorInfo> = {
   INVALID_PASSWORD: { message: '密碼錯誤', action: 'clearPassword' },
-  NOT_XLSX: { message: '請上傳 .xlsx 檔', action: 'none' },
-  PARSE_FAILED: { message: '解析失敗', action: 'disableCreate' },
+  // 匯入試算表：任何錯誤都清除預覽，「建立活動」因此停用
+  INVALID_SHEET_URL: { message: '這不是有效的 Google 試算表網址', action: 'clearPreview' },
+  SHEET_NOT_SHARED: { message: '無法讀取此試算表，請先共用給 〈shareWith〉', action: 'clearPreview' },
+  SHEET_NOT_FOUND: { message: '找不到這份試算表，請確認網址', action: 'clearPreview' },
+  WORKSHEET_NOT_FOUND: { message: '找不到指定的工作表：〈details〉', action: 'clearPreview' },
+  PARSE_FAILED: { message: '解析失敗：〈details〉', action: 'clearPreview' },
+  SHEETS_UNAVAILABLE: { message: 'Google 服務暫時無法連線，請稍後再試', action: 'clearPreview' },
   INVALID_GROUP_COUNT: { message: '組數不合法', action: 'none' },
-  UPLOAD_NOT_FOUND: { message: '上傳的檔案已失效，請重新上傳', action: 'none' },
+  IMPORT_NOT_FOUND: { message: '匯入結果已失效，請重新匯入', action: 'none' },
+  // 寫回試算表：失敗時不得出現「成功」「已寫入」
+  SHEET_READ_ONLY: { message: '試算表只有檢視權限，請把 〈shareWith〉 設為編輯者', action: 'none' },
+  SHEET_CHANGED: { message: '試算表的題目結構已變更，未寫入任何資料：〈details〉', action: 'none' },
+  SHEET_WRITE_FAILED: { message: '寫回失敗，試算表未被修改，請稍後再試', action: 'none' },
+  STALE_VERSION: { message: '結果已更新，請重新確認', action: 'resync' },
+  NOTHING_TO_EXPORT: { message: '目前沒有可寫回的結果', action: 'resync' },
+  EXPORT_IN_PROGRESS: { message: '正在寫回中，請稍候', action: 'none' },
   ANOTHER_QUESTION_OPEN: { message: '已有題目進行中', action: 'resync' },
   INVALID_STATE: { message: '題目狀態已變更', action: 'resync' },
   NOT_A_MEMBER: { message: '此成員不屬於該組', action: 'resync' },
@@ -32,10 +47,14 @@ export const ERROR_TABLE: Record<string, ErrorInfo> = {
 
 export const DEFAULT_ERROR: ErrorInfo = { message: '發生錯誤，請稍後再試', action: 'none' }
 
-export function describeError(code: string | undefined, details?: string): ErrorInfo {
+/**
+ * 依錯誤碼取得提示與動作，並代入〈details〉〈shareWith〉。
+ * 沒有 details 時連同前面的「：」一起去掉；沒有 shareWith 時改用「本系統的服務帳號」。
+ */
+export function describeError(code: string | undefined, details?: string, shareWith?: string): ErrorInfo {
   const info = (code && ERROR_TABLE[code]) || DEFAULT_ERROR
-  if (code === 'PARSE_FAILED' && details) {
-    return { ...info, message: `解析失敗：${details}` }
-  }
-  return info
+  const message = info.message
+    .replace(/：?〈details〉/, details ? `：${details}` : '')
+    .replace(/ ?〈shareWith〉 ?/, (m) => (shareWith ? m.replace('〈shareWith〉', shareWith) : '本系統的服務帳號'))
+  return message === info.message ? info : { ...info, message }
 }

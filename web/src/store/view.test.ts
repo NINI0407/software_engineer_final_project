@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Result } from '../api/types'
 import { q, studentSnap, teacherSnap } from '../test/fixtures'
-import { canChangeGroup, studentView, teacherButtons } from './view'
+import { canChangeGroup, hasSheetWrites, sheetWritePlan, studentView, teacherButtons } from './view'
 
 const result = (qid: string): Result => ({ questionId: qid, round: 1, submissions: [], winnerGroupId: null })
 
@@ -91,5 +91,110 @@ describe('teacherButtons（design D11）', () => {
   it('設為組長：只有不是組長的成員可以', () => {
     expect(teacherButtons.canSetLeader({ clientId: 'a', nickname: 'a', online: true, isLeader: true })).toBe(false)
     expect(teacherButtons.canSetLeader({ clientId: 'b', nickname: 'b', online: true, isLeader: false })).toBe(true)
+  })
+})
+
+describe('sheetWritePlan（寫回前確認，design G5）', () => {
+  // 每個 blank 依題號與序號給不同的儲存格，確認不是寫死的位置
+  const cells = (x: ReturnType<typeof q>) => ({
+    ...x,
+    blanks: x.blanks.map((b, i) => ({ ...b, cellRef: `學習單!G${x.number * 10 + i}` })),
+  })
+  const groups = [
+    { id: 'g1', name: '第 1 組' },
+    { id: 'g2', name: '第 2 組' },
+    { id: 'g3', name: '第 3 組' },
+  ]
+  const activity = { code: 'ABC234', groups }
+  const sub = (groupId: string, rank: number, answers: [string, string][]) => ({
+    groupId,
+    rank,
+    submittedAt: '2026-11-18T00:00:00Z',
+    answers: answers.map(([blankId, text]) => ({ blankId, text })),
+  })
+
+  it('單題：寫入順位 1 的組別、答案與儲存格；無人作答、進行中、未開始各自標示', () => {
+    const s = teacherSnap({
+      activity,
+      questions: [q('q1', 1, 'closed'), q('q2', 2, 'closed'), q('q3', 3, 'open'), q('q4', 4)].map(cells),
+      currentQuestionId: 'q3',
+      results: [
+        {
+          questionId: 'q1',
+          round: 1,
+          winnerGroupId: 'g2',
+          submissions: [sub('g2', 1, [['q1b1', '光合作用']]), sub('g1', 2, [['q1b1', '呼吸作用']])],
+        },
+        { questionId: 'q2', round: 1, winnerGroupId: null, submissions: [] },
+      ],
+    })
+    const plan = sheetWritePlan(s)
+    expect(plan.map((x) => [x.question.number, x.kind])).toEqual([
+      [1, 'write'],
+      [2, 'noAnswer'],
+      [3, 'open'],
+      [4, 'idle'],
+    ])
+    expect(plan[0]).toMatchObject({
+      groupName: '第 2 組',
+      cells: [{ label: null, cellRef: '學習單!G10', text: '光合作用' }],
+    })
+    expect(hasSheetWrites(s)).toBe(true)
+  })
+
+  it('題組：每個子填空各自一格', () => {
+    const s = teacherSnap({
+      activity,
+      questions: [cells(q('q1', 1, 'closed', 2))],
+      results: [
+        {
+          questionId: 'q1',
+          round: 1,
+          winnerGroupId: 'g3',
+          submissions: [sub('g3', 1, [['q1b1', 'CPU'], ['q1b2', '作業系統']])],
+        },
+      ],
+    })
+    expect(sheetWritePlan(s)[0]).toMatchObject({
+      kind: 'write',
+      groupName: '第 3 組',
+      cells: [
+        { label: '（1）', cellRef: '學習單!G10', text: 'CPU' },
+        { label: '（2）', cellRef: '學習單!G11', text: '作業系統' },
+      ],
+    })
+  })
+
+  it('重開過的題目只看快照中的最後一輪結果；重開進行中時不寫入', () => {
+    const reopened = { ...q('q1', 1, 'closed'), round: 2 }
+    const s = teacherSnap({
+      activity,
+      questions: [cells(reopened)],
+      results: [
+        { questionId: 'q1', round: 2, winnerGroupId: 'g3', submissions: [sub('g3', 1, [['q1b1', '第二輪']])] },
+      ],
+    })
+    expect(sheetWritePlan(s)[0]).toMatchObject({ kind: 'write', cells: [{ text: '第二輪' }] })
+    const reopenedOpen = teacherSnap({
+      activity,
+      questions: [cells({ ...q('q1', 1, 'open'), round: 2 })],
+      currentQuestionId: 'q1',
+      results: [],
+    })
+    expect(sheetWritePlan(reopenedOpen)[0].kind).toBe('open')
+  })
+
+  it('沒有已結束且有提交的題目時，沒有可寫回的內容', () => {
+    expect(hasSheetWrites(teacherSnap({ questions: [q('q1', 1)].map(cells) }))).toBe(false)
+    const closedEmpty = teacherSnap({
+      questions: [q('q1', 1, 'closed')].map(cells),
+      results: [{ questionId: 'q1', round: 1, winnerGroupId: null, submissions: [] }],
+    })
+    expect(hasSheetWrites(closedEmpty)).toBe(false)
+  })
+
+  it('依題號排序', () => {
+    const s = teacherSnap({ questions: [q('b', 2), q('a', 1)].map(cells) })
+    expect(sheetWritePlan(s).map((x) => x.question.number)).toEqual([1, 2])
   })
 })
