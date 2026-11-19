@@ -1,14 +1,15 @@
-# 課堂搶答系統（前端 + 開發用 mock 後端）
+# 課堂搶答系統
 
-用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 是**前端**與**開發用 mock 後端**；正式後端由其他組員負責，雙方依「前端介面約定」溝通：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/archive/2026-11-18-switch-to-online-google-sheets/design.md` 的 v1（G2），組長遞補的規則與介面差異見 `openspec/changes/archive/2026-11-18-auto-promote-leader-on-offline/design.md` 的 L4。
+用來取代「學生上台把 Guided Notes 答案寫在黑板上」的課堂搶答系統。本 repo 包含**前端**、**正式後端**與**開發用 mock 後端**，三者依同一份「介面約定」實作：基礎是 `openspec/changes/archive/2026-11-17-build-quiz-buzzer-frontend/design.md` 的 v0，Google 試算表的匯入與寫回見 `openspec/changes/archive/2026-11-18-switch-to-online-google-sheets/design.md` 的 v1（G2），組長遞補的規則與介面差異見 `openspec/changes/archive/2026-11-18-auto-promote-leader-on-offline/design.md` 的 L4。正式後端的設計見 `openspec/changes/archive/2026-11-19-build-quiz-backend/design.md`。
 
 - 前端：Vite + Vue 3（`web/`）
-- mock 後端：Express + Socket.IO，只存在記憶體（`mock/`）
-- 測試：Vitest 單元測試、Playwright 端對端測試（`e2e/`）
+- 正式後端：Express + Socket.IO，用 Google service account 讀寫試算表，狀態只存在記憶體（`server/`）
+- mock 後端：Express + Socket.IO，不連 Google，只用固定資料模擬（`mock/`），用於前端開發與 e2e 測試
+- 測試：Vitest 單元與整合測試、Playwright 端對端測試（`e2e/` 對 mock，`e2e-server/` 對正式後端）
 
 Guided Notes 直接使用**線上 Google 試算表**：老師貼上試算表網址匯入，搶答結束後由後端把搶答成功的答案寫回原試算表的對應填空格。
 
-> **憑證只在後端。** 呼叫 Google Sheets API、授權與金鑰都由正式後端負責。前端與 mock 都不需要、也不會讀取任何 Google 憑證；前端只會送出試算表網址，最多只會看到後端提供的「要共用給哪個 email」。不要在 `.env` 中新增任何 `VITE_GOOGLE_*` 變數（Vite 會把 `VITE_` 開頭的變數打包進瀏覽器端程式）。
+> **憑證只在後端。** 呼叫 Google Sheets API、授權與金鑰都由正式後端（`server/`）負責，設定方式見下方「正式後端」。前端與 mock 都不需要、也不會讀取任何 Google 憑證；前端只會送出試算表網址，最多只會看到後端提供的「要共用給哪個 email」。不要在 `.env` 中新增任何 `VITE_GOOGLE_*` 變數（Vite 會把 `VITE_` 開頭的變數打包進瀏覽器端程式）。
 >
 > mock 不會真的連到 Google：它依網址中的關鍵字回傳固定的預覽資料，寫回時只在記憶體中記錄「會寫到哪些儲存格」，用來開發與測試前端。
 
@@ -46,9 +47,57 @@ Guided Notes 直接使用**線上 Google 試算表**：老師貼上試算表網�
 
 同一個瀏覽器的分頁共用 Cookie，會被視為**同一位學生**。手動模擬多位學生時，請使用不同的瀏覽器、不同的瀏覽器設定檔或無痕視窗，或分別用 `http://localhost:5173` 與 `http://127.0.0.1:5173` 開啟（兩者的 Cookie 互相獨立）。
 
-### 接上真正的後端
+### 接上正式後端
 
-把 `.env` 的 `BACKEND_URL` 改成後端位址（例如 `http://localhost:4000`），只執行 `npm run dev:web`。Vite 會把 `/api` 與 `/socket.io` 代理到該位址，前端程式不需要修改。
+見下方「正式後端」。簡單說：把 `.env` 的 `BACKEND_URL` 改成 `http://localhost:4000`，分別執行 `npm run dev:server` 與 `npm run dev:web`。Vite 會把 `/api` 與 `/socket.io` 代理到該位址，前端程式不需要修改。
+
+## 正式後端（`server/`）
+
+正式後端照介面約定實作所有規則，並用 Google **service account** 直接讀寫老師的線上 Guided Notes。題目位置一律動態解析：後端在工作表中找同一列有「題號」與「作答」表頭的位置，再依題號欄與合併儲存格找出每題（含題組的「（1）」「（2）」子填空）的作答格，不寫死任何儲存格。
+
+### 1. 建立 service account 與金鑰（只需做一次）
+
+1. 到 Google Cloud Console 建立（或選擇）一個專案，啟用 **Google Sheets API**。
+2. 在「IAM 與管理 → 服務帳戶」建立一個服務帳戶，不需要指派任何專案角色。
+3. 在該服務帳戶的「金鑰」分頁新增一把 JSON 金鑰並下載。
+4. **把金鑰檔放在 repo 以外**，例如 `C:\Users\<你>\.secrets\quiz-buzzer-key.json`。不要放進專案資料夾，也不要提交（`.gitignore` 雖然排除了 `secrets/`、`*service-account*.json`、`*-key.json`，但那只是保險）。
+5. 在 `.env` 設定金鑰路徑：
+
+   ```bash
+   GOOGLE_SERVICE_ACCOUNT_KEY_FILE=C:/Users/<你>/.secrets/quiz-buzzer-key.json
+   ```
+
+啟動後端時，終端機會印出服務帳戶的 email（`...@...iam.gserviceaccount.com`）。
+
+### 2. 共用試算表給服務帳戶
+
+- 老師的 Guided Notes 必須是 **Google 試算表格式**。如果是上傳到雲端硬碟的 `.xlsx`，請先在 Google 試算表中「檔案 → 另存為 Google 試算表」，否則匯入會顯示解析失敗。
+- 在試算表按「共用」，把服務帳戶的 email 加進去：
+  - **檢視者**：可以匯入題目，但寫回時會顯示「試算表只有檢視權限」。
+  - **編輯者**：可以匯入與寫回（上課使用請設為編輯者）。
+- 沒有共用時，匯入頁會顯示要共用給哪個 email，並提供複製按鈕。
+
+### 3. 啟動
+
+```bash
+npm run dev:server   # 正式後端：http://localhost:4000（修改程式時自動重新啟動）
+npm run dev:web      # 前端：http://localhost:5173（.env 的 BACKEND_URL 要設為 http://localhost:4000）
+```
+
+不需要自動重新啟動時，可以用 `npm run start:server`。沒有設定 `TEACHER_PASSWORD` 時，後端每次啟動會隨機產生一組密碼並只印在終端機；沒有設定金鑰時，後端仍會啟動，但匯入與寫回會顯示「Google 服務暫時無法連線」。
+
+| 環境變數 | 說明 | 預設 |
+|---|---|---|
+| `TEACHER_PASSWORD` | 教師密碼（與 mock 共用同一個變數） | 未設定時隨機產生 |
+| `SERVER_PORT` | 正式後端的連接埠（和 mock 的 `PORT` 分開，兩者可以同時執行） | `4000` |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` | repo 以外的服務帳戶金鑰檔路徑 | 未設定時停用試算表功能 |
+
+### 4. 上課時的注意事項
+
+- **狀態只存在記憶體。** 後端重新啟動後，活動、匯入結果與作答都會消失。上課期間不要重新啟動後端；活動結束時先「寫回試算表」並「下載 CSV」。
+- 寫回時，後端會先重新讀取試算表並逐題比對作答格的位置。建立活動後如果在試算表中插入或刪除列，讓作答格移動，寫回會顯示「試算表的題目結構已變更」，而且一格都不會寫；工作表只是改名不影響寫回。
+- 答案一律以純文字寫入：`=1+1` 會原樣顯示，不會被當成公式；`007` 不會變成 `7`。
+- 目標格子已有內容時會被覆寫，可以用 Google 試算表的「版本記錄」還原。
 
 ## 組長規則
 
@@ -116,7 +165,7 @@ curl -X POST http://localhost:3000/__mock/reset
 
 ## 測試
 
-單元測試（前端邏輯與 mock 後端）：
+單元與整合測試（前端邏輯、mock 後端、正式後端）。正式後端的測試用 `server/testing/fake-sheets.js` 代替 Google，不需要網路或金鑰：
 
 ```bash
 npm test
@@ -138,13 +187,21 @@ npm run test:e2e
 npx playwright test e2e/student.spec.ts --trace on
 ```
 
+正式後端的端對端測試：
+
+```bash
+npm run test:server-e2e
+```
+
+`test:server-e2e` 會用測試專用的進入點 `server/testing/e2e-entry.js` 啟動正式後端（`:4100`，試算表換成 fake-sheets）與前端（`:5175`），跑一次不依賴 `/__mock` 鉤子的完整流程（`e2e-server/`）。真正連到 Google 試算表的部分需要人工驗證。
+
 其他指令：
 
 | 指令 | 用途 |
 |---|---|
 | `npm run typecheck` | 前端型別檢查（vue-tsc） |
 | `npm run build` | 建置前端到 `dist/` |
-| `npm run check:secrets` | 建置前端並掃描 `dist/`，確認沒有 Google 憑證、權杖或 `VITE_GOOGLE_` 變數 |
+| `npm run check:secrets` | 建置前端並掃描 `dist/`，確認沒有 Google 憑證、權杖或 `VITE_GOOGLE_` 變數；也掃描 repo 中會被提交的檔案，確認沒有服務帳戶私鑰 |
 
 ## 專案結構
 
@@ -155,9 +212,16 @@ web/        Vite + Vue 3 前端
   src/lib/        輸入驗證、錯誤碼對照、草稿共編、組別 Cookie
   src/pages/      老師端與學生端頁面
   src/components/ 寫回試算表、共用對象 email
+server/     正式後端
+  domain/         活動規則、快照、CSV（不依賴 HTTP 與 Socket.IO）
+  http/           REST 路徑
+  realtime/       Socket.IO：連線驗證、在線狀態、草稿、快照推送
+  sheets/         網址解析、題目解析器、Google 用戶端、寫回流程
+  testing/        測試專用：fake-sheets、整合測試工具、e2e 進入點
 mock/       開發用 mock 後端（fixtures.js：依網址選擇的固定匯入結果）
-e2e/        Playwright 測試
-scripts/    check-no-secrets.mjs（建置產物的憑證掃描）
-samples/    Guided Notes 範本（mock 固定資料的儲存格位置取自這兩份）
+e2e/        Playwright 測試（對 mock）
+e2e-server/ Playwright 測試（對正式後端）
+scripts/    check-no-secrets.mjs（建置產物與 repo 的憑證掃描）
+samples/    Guided Notes 範本（mock 固定資料與正式後端解析器測試資料都取自這兩份）
 openspec/   規格文件（proposal、design、specs、tasks）
 ```

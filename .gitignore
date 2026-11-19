@@ -7,3 +7,8 @@ test-results/
 playwright-report/
 blob-report/
 *.log
+
+# Google service account 金鑰（請放在 repo 以外；這裡只是保險）
+secrets/
+*service-account*.json
+*-key.json

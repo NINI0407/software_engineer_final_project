@@ -52,9 +52,37 @@ for (const name of ['.env.example', '.env']) {
   }
 }
 
+// repo 中的檔案（已追蹤，以及尚未追蹤但沒有被忽略、可能會被提交的檔案）不得含有 service account 私鑰
+// （change build-quiz-backend，design B8）。說明文件與這支腳本本身會提到欄位名稱，所以排除。
+const REPO_PATTERNS = [
+  ['service account 金鑰的 private_key 欄位', /"private_key"\s*:/],
+  ['PEM 私鑰', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+]
+const REPO_EXCLUDE = [/^scripts\/check-no-secrets\.mjs$/, /^openspec\//]
+
+function repoFiles() {
+  const out = execSync('git ls-files -z --cached --others --exclude-standard', { cwd: root, encoding: 'utf8' })
+  return [...new Set(out.split('\0').filter(Boolean))]
+}
+
+for (const rel of repoFiles()) {
+  if (REPO_EXCLUDE.some((re) => re.test(rel))) continue
+  let text
+  try {
+    text = readFileSync(path.join(root, rel), 'latin1')
+  } catch {
+    continue // 已刪除但尚未提交的檔案
+  }
+  for (const [label, re] of REPO_PATTERNS) {
+    if (re.test(text)) findings.push(`${rel}：${label}`)
+  }
+}
+
 if (findings.length) {
   console.error('發現可能的憑證或不允許的環境變數：')
   for (const f of findings) console.error(`  - ${f}`)
   process.exit(1)
 }
-console.log(`check:secrets 通過：已掃描 dist/，沒有發現 Google 憑證、權杖或 VITE_GOOGLE_ 變數。`)
+console.log(
+  `check:secrets 通過：已掃描 dist/ 與 repo 中的檔案，沒有發現 Google 憑證、私鑰、權杖或 VITE_GOOGLE_ 變數。`,
+)

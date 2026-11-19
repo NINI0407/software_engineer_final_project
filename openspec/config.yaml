@@ -11,18 +11,20 @@ context: |
   - 課堂搶答系統（軟體工程期末專題）：取代「學生上台把 Guided Notes 答案寫在黑板上」。
     老師從線上 Google 試算表匯入題目、開始/結束/重開題目；學生以組為單位搶答，組長送出，
     結束後由後端把順位 1 的答案寫回原試算表的對應填空格。
-  - 此分支(feature/quiz-buzzer-frontend)目前只負責「前端」與「開發用 mock 後端」，之後會與後端合併。
-    雙方依「前端介面約定」溝通：v0 在 archive/2026-11-17-build-quiz-buzzer-frontend 的 design.md（D8），
+  - repo 包含「前端」、「正式後端」（`server/`，設計見 archive/2026-11-19-build-quiz-backend 的 design.md）與「開發用 mock 後端」。
+    三者依同一份「介面約定」實作：v0 在 archive/2026-11-17-build-quiz-buzzer-frontend 的 design.md（D8），
     v1 在 archive/2026-11-18-switch-to-online-google-sheets 的 design.md（G2），之後的差異寫在各 change 的 design.md。
   - 改到介面約定（REST 路徑、錯誤碼、快照欄位、Socket.IO 事件）時，design.md 必須附「相對前一版的差異表」，
-    交給後端組確認；mock 與前端照同一份約定實作。
+    前端、正式後端與 mock 照同一份約定一起修改，並與 SpecKit 組確認系統功能一致。
 
   ## 技術堆疊
   - Node.js 20 以上（開發用 Node 24），npm，ES modules（package.json `type: module`）。
   - 前端 `web/`：Vue 3（Composition API、`<script setup lang="ts">`）、Vue Router 4、Vite 6、TypeScript 5（vue-tsc 型別檢查）。
     沒有使用 Pinia 等狀態管理套件，用 `reactive` 自製 store。
+  - 正式後端 `server/`：Express 4 + Socket.IO 4 + `@googleapis/sheets`，純 JavaScript（JSDoc），狀態只存在記憶體；
+    分層為 domain（規則，不依賴 HTTP/Socket）、http、realtime、sheets（網址、解析器、Google 用戶端、寫回）；試算表用戶端以參數注入，測試用 `server/testing/fake-sheets.js`。
   - mock 後端 `mock/`：Express 4 + Socket.IO 4，純 JavaScript，狀態只存在記憶體；不呼叫任何 Google API、不讀任何 Google 憑證。
-  - 測試：Vitest 3（單元，jsdom；含 mock 後端的整合測試）、Playwright（e2e，只跑 chromium，workers 1）。
+  - 測試：Vitest 3（單元，jsdom；含 mock 後端與正式後端的整合測試）、Playwright（e2e，只跑 chromium，workers 1；`e2e/` 對 mock，`e2e-server/` 對正式後端）。
   - 執行環境：Windows + OneDrive 同步資料夾；路徑含中文，指令以 Git Bash / PowerShell 執行。
 
   ## 架構慣例
@@ -42,12 +44,13 @@ context: |
 
   ## 測試與驗收
   - 每個 spec Scenario 都要有對應的測試（mock 單元測試或 e2e）。
-  - 完成前要通過：`npm run typecheck`、`npm test`、`npm run test:e2e`、`npm run build`、`npm run check:secrets`。
+  - 完成前要通過：`npm run typecheck`、`npm test`、`npm run test:e2e`、`npm run test:server-e2e`、`npm run build`、`npm run check:secrets`。
   - e2e 自動啟動獨立的 mock（:3100）與前端（:5174），教師密碼在執行時隨機產生；每個測試前呼叫 `/__mock/reset`。
   - 「約一秒內同步」的斷言逾時設 2 秒。
 
   ## 安全
   - 前端與 mock 都不得接觸 Google 憑證；不得新增 `VITE_GOOGLE_*` 環境變數（Vite 會打包進瀏覽器）。
+  - Google service account 金鑰只放在 repo 外，由 `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` 指定；正式後端不使用預設憑證（ADC），也不得記錄金鑰或權杖。
   - 教師密碼只從環境變數 `TEACHER_PASSWORD` 讀取；前端不得保存或比對密碼。
 
 
